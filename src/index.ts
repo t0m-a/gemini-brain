@@ -1,22 +1,24 @@
 /**
  * File: C:\Users\simon\Workspaces\gemini-brain\src\index.ts
  * Purpose: Stateless Streamable HTTP MCP v2 Server routing to BrainMemoryDO
+ *          with 4-Way Federated Recall across BrainMemoryDO + kb.tsimon.me (D1 + Vectorize).
  */
 
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
 import { BrainMemoryDO, type Env } from "./memory-do";
+import { KbFederationService } from "./federation";
 
-export { BrainMemoryDO };
+export { BrainMemoryDO, KbFederationService };
 
 function createBrainMcpServer(env: Env) {
   const server = new McpServer({
     name: "gemini-brain-mcp",
-    version: "1.0.0"
+    version: "1.1.0"
   });
 
-  // Always route to the singleton or namespace-scoped Durable Object instance
+  // Always route to the singleton Durable Object instance
   const getBrainStub = () => {
     const id = env.BRAIN_DO.idFromName("thomas-simon-primary-brain");
     return env.BRAIN_DO.get(id);
@@ -27,12 +29,26 @@ function createBrainMcpServer(env: Env) {
     "hybrid_recall",
     {
       description:
-        "Retrieve token-budgeted context using hybrid SQLite FTS5 BM25, Vectorize bge-m3 semantic similarity, and 1-hop knowledge graph expansion.",
+        "Retrieve token-budgeted context using 4-way federated Reciprocal Rank Fusion across BrainMemoryDO (SQLite FTS5 BM25 + Vectorize bge-m3 1024-dim + 1-hop Knowledge Graph) and kb.tsimon.me (D1 archive-knowledge-db FTS5 + Vectorize archive-kb-index 768-dim).",
       inputSchema: z.object({
         query: z.string().describe("Search query or technical topic to recall"),
-        namespace: z.string().optional().describe("Project scope (e.g., 'global', 'tsimon.me', 'minkalab.net')"),
-        tokenBudget: z.number().int().min(200).max(8000).optional().describe("Max tokens to return (default: 1500)"),
-        halfLifeDays: z.number().min(1).max(365).optional().describe("Temporal decay half-life in days (default: 30)")
+        namespace: z
+          .string()
+          .optional()
+          .describe("Project scope (e.g., 'global', 'tsimon.me', 'minkalab.net', 'homelab')"),
+        tokenBudget: z
+          .number()
+          .int()
+          .min(200)
+          .max(8000)
+          .optional()
+          .describe("Max tokens to return (default: 1500)"),
+        halfLifeDays: z
+          .number()
+          .min(1)
+          .max(365)
+          .optional()
+          .describe("Temporal decay half-life in days (default: 30)")
       })
     },
     async (args) => {
@@ -55,7 +71,10 @@ function createBrainMcpServer(env: Env) {
         decision: z.string().describe("Exact specification or rule decided"),
         rationale: z.string().describe("Engineering justification and trade-offs"),
         namespace: z.string().optional().describe("Target project namespace"),
-        supersedesDecisionId: z.string().optional().describe("ID of an older ADR this decision replaces")
+        supersedesDecisionId: z
+          .string()
+          .optional()
+          .describe("ID of an older ADR this decision replaces")
       })
     },
     async (args) => {
@@ -110,14 +129,31 @@ function createBrainMcpServer(env: Env) {
       description:
         "Store a semantic or procedural memory in Durable Object SQLite, index its 1024-dim vector in Vectorize, and link optional knowledge graph triples.",
       inputSchema: z.object({
-        id: z.string().optional().describe("Optional deterministic memory ID for idempotent upserts"),
+        id: z
+          .string()
+          .optional()
+          .describe("Optional deterministic memory ID for idempotent upserts"),
         title: z.string().describe("Concise title of the memory chunk"),
         content: z.string().describe("Full Markdown or code block to store"),
-        summary: z.string().optional().describe("1-2 sentence compressed summary for tight token budgets"),
-        namespace: z.string().optional().describe("Namespace ('global', 'tsimon.me', 'minkalab.net', 'homelab')"),
+        summary: z
+          .string()
+          .optional()
+          .describe("1-2 sentence compressed summary for tight token budgets"),
+        namespace: z
+          .string()
+          .optional()
+          .describe("Namespace ('global', 'tsimon.me', 'minkalab.net', 'homelab')"),
         memoryType: z.enum(["semantic", "procedural", "episodic_summary"]).optional(),
-        sourceUri: z.string().optional().describe("Originating file path, git commit, or URL"),
-        importance: z.number().min(0).max(1).optional().describe("Salience weight from 0.0 to 1.0"),
+        sourceUri: z
+          .string()
+          .optional()
+          .describe("Originating file path, git commit, or URL"),
+        importance: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe("Salience weight from 0.0 to 1.0"),
         triples: z
           .array(
             z.object({
@@ -249,11 +285,19 @@ export default {
     }
 
     // SEP-2127 Static Discovery Card for zero-connection MCP capability inspection
-    if (url.pathname === "/server-card" || url.pathname === "/.well-known/ai-catalog.json") {
+    if (
+      url.pathname === "/server-card" ||
+      url.pathname === "/.well-known/ai-catalog.json" ||
+      url.pathname === "/.well-known/mcp/server-card.json"
+    ) {
       return Response.json({
         name: "gemini-brain-mcp",
-        version: "1.0.0",
+        version: "1.1.0",
         endpoint: `https://brain.${env.PRIMARY_DOMAIN}/mcp`,
+        federated_sources: [
+          "brain.tsimon.me (BrainMemoryDO + gemini-brain-bge-m3 1024-dim + RPi5 Qdrant)",
+          "kb.tsimon.me (D1 archive-knowledge-db + archive-kb-index 768-dim)"
+        ],
         tools: ["hybrid_recall", "log_decision", "log_episodic_event", "remember_fact"]
       });
     }

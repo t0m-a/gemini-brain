@@ -1,19 +1,30 @@
 /**
  * File: C:\Users\simon\Workspaces\gemini-brain\src\memory-do.ts
- * Purpose: Stateful Durable Object implementing Hybrid Search (SQLite FTS5 + Vectorize + Graph)
- *          and Token-Budgeted Context Compilation.
+ * Purpose: Stateful Durable Object implementing Federated 4-Way Hybrid Search
+ *          (DO SQLite FTS5 + Brain Vectorize 1024-dim + D1 archive-knowledge-db FTS5 +
+ *          KB Vectorize 768-dim + 1-Hop Knowledge Graph + Token-Budgeted RRF Compilation).
  */
 
 import { DurableObject } from "cloudflare:workers";
 import { SCHEMA_DDL, LEXICAL_HYBRID_SQL, GRAPH_EXPANSION_SQL } from "./schema";
+import {
+  buildSafeFts5Query,
+  estimateTokens,
+  fuseBrainAndKb,
+  queryKbArchive,
+  type RankedCandidate
+} from "./federation";
 
 export interface Env {
   BRAIN_DO: DurableObjectNamespace<BrainMemoryDO>;
   VECTOR_INDEX: VectorizeIndex;
+  KB_DB: D1Database;
+  KB_VECTORIZE: VectorizeIndex;
   AI: Ai;
   DEFAULT_NAMESPACE: string;
   PRIMARY_DOMAIN: string;
   EMBEDDING_MODEL: string;
+  KB_EMBEDDING_MODEL: string;
   RERANKER_MODEL: string;
   MCP_BEARER_TOKEN?: string;
 }
@@ -109,27 +120,6 @@ export class BrainMemoryDO extends DurableObject<Env> {
   }
 
   /**
-   * Estimates token count (~4 chars per token heuristic for fast synchronous accounting).
-   */
-  private estimateTokens(text: string): number {
-    return Math.ceil(text.length / 4);
-  }
-
-  /**
-   * Sanitizes a raw natural-language query into a safe SQLite FTS5 OR expression.
-   */
-  private buildFts5Query(rawQuery: string): string {
-    const tokens = rawQuery
-      .replace(/[^\p{L}\p{N}_.\-/]/gu, " ")
-      .split(/\s+/)
-      .map((t) => t.trim())
-      .filter((t) => t.length >= 2);
-
-    if (tokens.length === 0) return '""';
-    return tokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
-  }
-
-  /**
    * RPC Method 1: Upsert a Semantic Memory + Knowledge Graph Triples + Vector Embedding
    */
   async rememberFact(input: {
@@ -158,7 +148,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
     const summary =
       input.summary ||
       (input.content.length > 280 ? `${input.content.slice(0, 277)}...` : input.content);
-    const tokenCount = this.estimateTokens(`${input.title}\n${input.content}`);
+    const tokenCount = estimateTokens(`${input.title}\n${input.content}`);
     const now = Math.floor(Date.now() / 1000);
 
     // 1. Generate 1024-dim dense embedding using Workers AI (@cf/baai/bge-m3)
@@ -262,29 +252,40 @@ export class BrainMemoryDO extends DurableObject<Env> {
   }
 
   /**
-   * RPC Method 2: Hybrid Recall (FTS5 BM25 + Vectorize ANN + RRF Fusion + Graph Expansion + Token Packing)
+   * RPC Method 2: Federated 4-Way Hybrid Recall
+   *   - Signal 1 (brain_fts): DO SQLite FTS5 BM25
+   *   - Signal 2 (brain_vec): Vectorize gemini-brain-bge-m3 (1024-dim) + 1-Hop KG Expansion
+   *   - Signal 3 (kb_fts):    D1 archive-knowledge-db kb_fts BM25
+   *   - Signal 4 (kb_vec):    Vectorize archive-kb-index (768-dim) hydrated from D1
    */
   async hybridRecall(params: HybridRecallParams): Promise<{
     compiledMarkdown: string;
     tokensUsed: number;
     tokenBudget: number;
     matchedCount: number;
+    brainCount: number;
+    kbCount: number;
     graphTriplesCount: number;
   }> {
     const namespace = params.namespace || this.env.DEFAULT_NAMESPACE || "global";
     const tokenBudget = params.tokenBudget ?? 1500;
     const halfLifeSeconds = (params.halfLifeDays ?? 30) * 86400;
-    const topK = params.topK ?? 20;
+    const topK = params.topK ?? 15;
     const now = Math.floor(Date.now() / 1000);
-    const RRF_K = 60;
 
-    // Step 1: Parallel Semantic Vector Search + Synchronous SQLite FTS5 Lexical Search
-    const ftsQuery = this.buildFts5Query(params.query);
+    // Step 1: Fan out across Brain (1024-dim + DO SQLite FTS5) AND kb.tsimon.me (768-dim + D1 FTS5) concurrently
+    const ftsQuery = buildSafeFts5Query(params.query);
 
-    const embeddingPromise = this.env.AI.run(
+    const brainEmbeddingPromise = this.env.AI.run(
       this.env.EMBEDDING_MODEL as "@cf/baai/bge-m3",
       { text: [params.query] }
     ) as Promise<{ data: number[][] }>;
+
+    const kbArchivePromise = queryKbArchive(this.env, {
+      query: params.query,
+      namespace,
+      topK
+    });
 
     const lexicalRows =
       ftsQuery !== '""'
@@ -299,102 +300,117 @@ export class BrainMemoryDO extends DurableObject<Env> {
             .toArray()
         : [];
 
-    const embeddingRes = await embeddingPromise;
-    const queryVector = embeddingRes.data[0];
+    const [brainEmbeddingRes, kbArchiveRes] = await Promise.all([
+      brainEmbeddingPromise,
+      kbArchivePromise
+    ]);
 
-    const vectorMatches = await this.env.VECTOR_INDEX.query(queryVector, {
-      topK,
-      namespace,
-      returnMetadata: "none"
-    });
+    const queryVector1024 = brainEmbeddingRes.data[0];
 
-    // Step 2: Reciprocal Rank Fusion (RRF) across Lexical and Semantic Candidates
-    const candidateMap = new Map<
-      string,
-      {
-        record?: MemoryRecord;
-        lexicalRank?: number;
-        vectorRank?: number;
-        vectorScore?: number;
-        recencyDecay: number;
-      }
-    >();
+    // Query Brain Vectorize (1024-dim). When namespace is 'global', search across all Brain namespaces;
+    // when a specific namespace is requested, query both that namespace and 'global' concurrently.
+    const vectorMatches =
+      namespace === "global"
+        ? await this.env.VECTOR_INDEX.query(queryVector1024, {
+            topK,
+            returnMetadata: "none"
+          })
+        : await (async () => {
+            const [nsMatches, globalMatches] = await Promise.all([
+              this.env.VECTOR_INDEX.query(queryVector1024, {
+                topK,
+                namespace,
+                returnMetadata: "none"
+              }),
+              this.env.VECTOR_INDEX.query(queryVector1024, {
+                topK: Math.max(5, Math.floor(topK / 2)),
+                namespace: "global",
+                returnMetadata: "none"
+              })
+            ]);
+            const seen = new Set<string>();
+            const combined = [...nsMatches.matches, ...globalMatches.matches]
+              .filter((m) => {
+                if (seen.has(m.id)) return false;
+                seen.add(m.id);
+                return true;
+              })
+              .sort((a, b) => b.score - a.score)
+              .slice(0, topK);
+            return { matches: combined, count: combined.length };
+          })();
 
+    // Step 2: Hydrate vector-only Brain candidates from DO SQLite
+    const ftsRecordMap = new Map<string, MemoryRecord>();
     for (const row of lexicalRows) {
-      candidateMap.set(row.id, {
-        record: row,
-        lexicalRank: row.lexical_rank,
-        recencyDecay: row.recency_decay
-      });
+      ftsRecordMap.set(row.id, row);
     }
 
-    vectorMatches.matches.forEach((match, idx) => {
-      const existing = candidateMap.get(match.id);
-      if (existing) {
-        existing.vectorRank = idx + 1;
-        existing.vectorScore = match.score;
-      } else {
-        candidateMap.set(match.id, {
-          vectorRank: idx + 1,
-          vectorScore: match.score,
-          recencyDecay: 1.0
-        });
-      }
-    });
+    const missingVecIds = vectorMatches.matches
+      .map((m) => m.id)
+      .filter((id) => !ftsRecordMap.has(id));
 
-    // Hydrate any vector-only hits from SQLite that were not in the FTS5 result set
-    const missingIds = Array.from(candidateMap.entries())
-      .filter(([, val]) => !val.record)
-      .map(([id]) => id);
-
-    if (missingIds.length > 0) {
+    const hydratedVecMap = new Map<string, MemoryRecord>();
+    if (missingVecIds.length > 0) {
       const hydrated = this.sql
-        .exec<MemoryRecord & { recency_decay: number }>(
+        .exec<MemoryRecord>(
           `SELECT
              id, namespace, memory_type, title, content, summary, source_uri,
-             token_count, importance, confidence, access_count, updated_at,
-             EXP(-0.693147 * MAX(0, (?2 - updated_at)) / ?3) AS recency_decay
+             token_count, importance, confidence, access_count, updated_at
            FROM memories
            WHERE id IN (SELECT value FROM json_each(?1))
              AND superseded_by IS NULL`,
-          JSON.stringify(missingIds),
-          now,
-          halfLifeSeconds
+          JSON.stringify(missingVecIds)
         )
         .toArray();
 
       for (const row of hydrated) {
-        const entry = candidateMap.get(row.id);
-        if (entry) {
-          entry.record = row;
-          entry.recencyDecay = row.recency_decay;
-        }
+        hydratedVecMap.set(row.id, row);
       }
     }
 
-    // Step 3: Compute Composite Context Engineering Score
-    // Score(m) = 0.65 * RRF_Norm + 0.20 * RecencyDecay + 0.15 * Importance
-    const scoredCandidates = Array.from(candidateMap.values())
-      .filter((c): c is Required<typeof c> & { record: MemoryRecord } => Boolean(c.record))
-      .map((c) => {
-        const rrfLexical = c.lexicalRank ? 1 / (RRF_K + c.lexicalRank) : 0;
-        const rrfVector = c.vectorRank ? 1 / (RRF_K + c.vectorRank) : 0;
-        const rrfNormalized = (rrfLexical + rrfVector) * (RRF_K / 2);
+    // Build brainFts and brainVec RankedCandidate lists
+    const brainFtsCandidates: RankedCandidate[] = lexicalRows.map((row) => ({
+      id: row.id,
+      source: "brain_fts",
+      origin: "brain.tsimon.me",
+      title: `[${row.namespace}] ${row.title}`,
+      content: row.content,
+      summary: row.summary,
+      uri: row.source_uri || `brain://${row.namespace}/${row.id}`,
+      namespace: row.namespace,
+      rawScore: row.raw_bm25,
+      importance: row.importance ?? 0.6,
+      updatedAtMs: row.updated_at * 1000
+    }));
 
-        const compositeScore =
-          0.65 * rrfNormalized +
-          0.2 * c.recencyDecay +
-          0.15 * (c.record.importance ?? 0.5);
+    const brainVecCandidates: RankedCandidate[] = [];
+    for (const match of vectorMatches.matches) {
+      const rec = ftsRecordMap.get(match.id) || hydratedVecMap.get(match.id);
+      if (!rec) continue;
+      brainVecCandidates.push({
+        id: rec.id,
+        source: "brain_vec",
+        origin: "brain.tsimon.me",
+        title: `[${rec.namespace}] ${rec.title}`,
+        content: rec.content,
+        summary: rec.summary,
+        uri: rec.source_uri || `brain://${rec.namespace}/${rec.id}`,
+        namespace: rec.namespace,
+        rawScore: match.score,
+        importance: rec.importance ?? 0.6,
+        updatedAtMs: rec.updated_at * 1000
+      });
+    }
 
-        return {
-          ...c.record,
-          compositeScore
-        };
-      })
-      .sort((a, b) => b.compositeScore - a.compositeScore);
+    // Step 3: Expand 1-Hop Knowledge Graph Neighbors for the Top Brain Candidates
+    const topBrainIds = Array.from(
+      new Set([
+        ...brainFtsCandidates.slice(0, 6).map((c) => c.id),
+        ...brainVecCandidates.slice(0, 6).map((c) => c.id)
+      ])
+    ).slice(0, 10);
 
-    // Step 4: Expand 1-Hop Knowledge Graph Neighbors for the Top Candidates
-    const topIds = scoredCandidates.slice(0, 8).map((c) => c.id);
     const queryTerms = params.query
       .split(/\s+/)
       .map((w) => w.trim())
@@ -403,85 +419,67 @@ export class BrainMemoryDO extends DurableObject<Env> {
     const graphTriples = this.sql
       .exec<GraphTriple>(
         GRAPH_EXPANSION_SQL,
-        JSON.stringify(topIds),
+        JSON.stringify(topBrainIds),
         JSON.stringify(queryTerms),
         namespace,
         15
       )
       .toArray();
 
-    // Update access_count and last_accessed_at for recalled memories (synaptic reinforcement)
-    if (topIds.length > 0) {
+    // Synaptic reinforcement: increment access_count for recalled Brain memories
+    if (topBrainIds.length > 0) {
       this.sql.exec(
         `UPDATE memories
          SET access_count = access_count + 1,
              last_accessed_at = ?2
          WHERE id IN (SELECT value FROM json_each(?1))`,
-        JSON.stringify(topIds),
+        JSON.stringify(topBrainIds),
         now
       );
     }
 
-    // Step 5: Deterministic Token-Budgeted Prompt Packer
-    // Reserve up to 20% of tokenBudget for Knowledge Graph triples; pack full text for Top 3, summaries for rest
-    let tokensUsed = 0;
-    const graphBudget = Math.floor(tokenBudget * 0.2);
-    const graphLines: string[] = [];
+    // Fetch active ADRs (compact bullet list) for context grounding
+    const adrRows = this.sql
+      .exec<ActiveDecisionRow>(
+        `SELECT decision_id, title, decision, rationale, created_at
+         FROM decisions
+         WHERE (namespace = ?1 OR namespace = 'global')
+           AND status = 'active'
+         ORDER BY created_at DESC
+         LIMIT 5`,
+        namespace
+      )
+      .toArray();
 
-    for (const triple of graphTriples) {
-      const line = `- (${triple.subject_name}) --[${triple.relation}]--> (${triple.object_name})`;
-      const cost = this.estimateTokens(line);
-      if (tokensUsed + cost <= graphBudget) {
-        graphLines.push(line);
-        tokensUsed += cost;
-      }
-    }
+    const activeDecisionLines = adrRows.map(
+      (r) => `- **[${r.decision_id}] ${r.title}**: ${r.decision}`
+    );
 
-    const fullBlocks: string[] = [];
-    const summaryBlocks: string[] = [];
+    const extraTriples = graphTriples.map((t) => ({
+      subject: t.subject_name,
+      predicate: t.relation,
+      object: t.object_name
+    }));
 
-    scoredCandidates.forEach((mem, idx) => {
-      if (idx < 3) {
-        const block = `### [${mem.namespace}] ${mem.title} (score: ${mem.compositeScore.toFixed(3)})\n${mem.content}`;
-        const cost = this.estimateTokens(block);
-        if (tokensUsed + cost <= tokenBudget) {
-          fullBlocks.push(block);
-          tokensUsed += cost;
-          return;
-        }
-      }
-
-      // Fallback or rank >= 4: pack compressed summary
-      const summaryText = mem.summary || mem.content.slice(0, 220);
-      const condensed = `- **${mem.title}** (${mem.source_uri ?? mem.memory_type}): ${summaryText}`;
-      const summaryCost = this.estimateTokens(condensed);
-      if (tokensUsed + summaryCost <= tokenBudget) {
-        summaryBlocks.push(condensed);
-        tokensUsed += summaryCost;
-      }
+    // Step 4: Execute 4-Way Weighted Reciprocal Rank Fusion (Brain FTS + Brain Vec + KB FTS + KB Vec)
+    const fused = fuseBrainAndKb({
+      brainFts: brainFtsCandidates,
+      brainVec: brainVecCandidates,
+      kbFts: kbArchiveRes.ftsResults,
+      kbVec: kbArchiveRes.vecResults,
+      activeDecisions: activeDecisionLines,
+      extraTriples,
+      tokenBudget
     });
 
-    const sections: string[] = [
-      `<brain_context namespace="${namespace}" tokens_used="${tokensUsed}" token_budget="${tokenBudget}">`
-    ];
-
-    if (fullBlocks.length > 0) {
-      sections.push(`## Primary Recalled Memories\n${fullBlocks.join("\n\n")}`);
-    }
-    if (summaryBlocks.length > 0) {
-      sections.push(`## Secondary Condensed Context\n${summaryBlocks.join("\n")}`);
-    }
-    if (graphLines.length > 0) {
-      sections.push(`## Connected Knowledge Graph Triples\n${graphLines.join("\n")}`);
-    }
-    sections.push(`</brain_context>`);
-
     return {
-      compiledMarkdown: sections.join("\n\n"),
-      tokensUsed,
-      tokenBudget,
-      matchedCount: fullBlocks.length + summaryBlocks.length,
-      graphTriplesCount: graphLines.length
+      compiledMarkdown: fused.contextBlock,
+      tokensUsed: fused.totalTokens,
+      tokenBudget: fused.tokenBudget,
+      matchedCount: fused.selectedCount,
+      brainCount: fused.brainCount,
+      kbCount: fused.kbCount,
+      graphTriplesCount: fused.graphTriplesCount
     };
   }
 
@@ -603,7 +601,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
       .exec<{ count: number }>(
         `SELECT COUNT(*) AS count
          FROM memories
-         WHERE (namespace = ?1 OR namespace = 'global')
+         WHERE (?1 = 'global' OR namespace = ?1 OR namespace = 'global')
            AND superseded_by IS NULL`,
         namespace
       )
@@ -613,7 +611,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
       .exec<{ count: number }>(
         `SELECT COUNT(*) AS count
          FROM entities
-         WHERE namespace = ?1 OR namespace = 'global'`,
+         WHERE ?1 = 'global' OR namespace = ?1 OR namespace = 'global'`,
         namespace
       )
       .one().count;
@@ -622,7 +620,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
       .exec<{ count: number }>(
         `SELECT COUNT(*) AS count
          FROM edges
-         WHERE (namespace = ?1 OR namespace = 'global')
+         WHERE (?1 = 'global' OR namespace = ?1 OR namespace = 'global')
            AND valid_until IS NULL`,
         namespace
       )

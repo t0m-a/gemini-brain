@@ -24,10 +24,21 @@
       "new_sqlite_classes": ["BrainMemoryDO"]
     }
   ],
+  "d1_databases": [
+    {
+      "binding": "KB_DB",
+      "database_name": "archive-knowledge-db",
+      "database_id": "c0734505-169c-4997-a603-8b3c9d06cab0"
+    }
+  ],
   "vectorize": [
     {
       "binding": "VECTOR_INDEX",
       "index_name": "gemini-brain-bge-m3"
+    },
+    {
+      "binding": "KB_VECTORIZE",
+      "index_name": "archive-kb-index"
     }
   ],
   "ai": {
@@ -37,6 +48,7 @@
     "DEFAULT_NAMESPACE": "global",
     "PRIMARY_DOMAIN": "tsimon.me",
     "EMBEDDING_MODEL": "@cf/baai/bge-m3",
+    "KB_EMBEDDING_MODEL": "@cf/baai/bge-base-en-v1.5",
     "RERANKER_MODEL": "@cf/baai/bge-reranker-base"
   }
 }

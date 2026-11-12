@@ -156,7 +156,7 @@ SELECT
     ROW_NUMBER() OVER (ORDER BY f.raw_bm25 DESC) AS lexical_rank
 FROM fts_matches f
 JOIN memories m ON m.rowid = f.rowid
-WHERE (m.namespace = ?2 OR m.namespace = 'global')
+WHERE (?2 = 'global' OR m.namespace = ?2 OR m.namespace = 'global')
   AND m.superseded_by IS NULL
 ORDER BY lexical_rank ASC
 LIMIT ?5;
@@ -203,7 +203,7 @@ FROM edges e
 JOIN entities s ON s.entity_id = e.source_entity
 JOIN entities t ON t.entity_id = e.target_entity
 WHERE e.valid_until IS NULL
-  AND (e.namespace = ?3 OR e.namespace = 'global')
+  AND (?3 = 'global' OR e.namespace = ?3 OR e.namespace = 'global')
   AND (
       e.source_entity IN (SELECT entity_id FROM seed_entities)
       OR e.target_entity IN (SELECT entity_id FROM seed_entities)
