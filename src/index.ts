@@ -110,6 +110,7 @@ function createBrainMcpServer(env: Env) {
       description:
         "Store a semantic or procedural memory in Durable Object SQLite, index its 1024-dim vector in Vectorize, and link optional knowledge graph triples.",
       inputSchema: z.object({
+        id: z.string().optional().describe("Optional deterministic memory ID for idempotent upserts"),
         title: z.string().describe("Concise title of the memory chunk"),
         content: z.string().describe("Full Markdown or code block to store"),
         summary: z.string().optional().describe("1-2 sentence compressed summary for tight token budgets"),
