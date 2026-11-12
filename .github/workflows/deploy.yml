@@ -1,0 +1,66 @@
+name: Deploy Gemini Brain MCP to Cloudflare
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "README.md"
+      - "rpi-sync/**"
+      - "**.md"
+  workflow_dispatch:
+
+concurrency:
+  group: cloudflare-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Typecheck & Deploy Worker (brain.tsimon.me)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps || npm install --legacy-peer-deps
+
+      - name: Generate Cloudflare runtime types & verify TypeScript
+        run: |
+          npx wrangler types
+          npx tsc --noEmit
+
+      - name: Deploy Worker & BrainMemoryDO to Cloudflare Edge
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
+
+      - name: Verify live MCP Discovery Card on brain.tsimon.me
+        if: ${{ secrets.MCP_BEARER_TOKEN != '' }}
+        env:
+          MCP_BEARER_TOKEN: ${{ secrets.MCP_BEARER_TOKEN }}
+        run: |
+          echo "Waiting 5s for edge route propagation..."
+          sleep 5
+          HTTP_STATUS=$(curl -s -o /tmp/card.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${MCP_BEARER_TOKEN}" \
+            https://brain.tsimon.me/server-card)
+          cat /tmp/card.json
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "::error::Health check failed with HTTP status $HTTP_STATUS"
+            exit 1
+          fi
