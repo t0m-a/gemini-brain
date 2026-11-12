@@ -1,0 +1,42 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gemini-brain",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    {
+      "pattern": "brain.tsimon.me",
+      "custom_domain": true
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BRAIN_DO",
+        "class_name": "BrainMemoryDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["BrainMemoryDO"]
+    }
+  ],
+  "vectorize": [
+    {
+      "binding": "VECTOR_INDEX",
+      "index_name": "gemini-brain-bge-m3"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "vars": {
+    "DEFAULT_NAMESPACE": "global",
+    "PRIMARY_DOMAIN": "tsimon.me",
+    "EMBEDDING_MODEL": "@cf/baai/bge-m3",
+    "RERANKER_MODEL": "@cf/baai/bge-reranker-base"
+  }
+}

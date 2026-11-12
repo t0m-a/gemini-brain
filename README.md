@@ -1,0 +1,3 @@
+Overview: Deploys a stateful Cross-Client Semantic Memory and Knowledge Brain MCP server on Cloudflare Workers (brain.tsimon.me), backed by Durable Object embedded SQLite (FTS5 + Entity Graph) and Cloudflare Vectorize (@cf/baai/bge-m3). It enables Google Antigravity, Gemini CLI, and your Raspberry Pi 5 to store and retrieve token-budgeted context.
+
+Prerequisites: Node.js 22+, Wrangler CLI (npm i -g wrangler), authenticated Cloudflare session for ts67200@gmail.com (wrangler login), and active zone tsimon.me.

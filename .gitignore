@@ -1,0 +1,50 @@
+$gitignoreContent = @'
+# CLOUDFLARE WRANGLER & DURABLE OBJECT LOCAL STATE / SECRETS
+.dev.vars
+.dev.vars.*
+.wrangler/
+wrangler.toml.bak
+
+# NODE.JS & TYPESCRIPT BUILD ARTIFACTS
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+npm-debug.log*
+
+# PYTHON (RPI-5 AST & MARKDOWN SYNC DAEMON)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.db
+*.sqlite
+*.sqlite3
+
+# PRIVATE ARCHITECTURAL & AI CONTEXT SPECIFICATIONS (NEVER SYNC)
+Human-Context Architecture.md
+HUMAN_CONTEXT_ARCHITECTURE.md
+*Human*Context*Architecture*.md
+01_Human_Context_Architecture_Obsidian.md
+02_LLM_Calibration_System_Prompt.md
+03_Context_Engineering_Blueprint_Study_Guide.md
+thomas_simon_gemma4_context.md
+gemma4_master_context_compiled.md
+
+# ENVIRONMENT SECRETS & KEYS
+.env
+.env.*
+*.local
+*.pem
+*.key
+
+# OS & EDITOR ARTIFACTS
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*~
+'@
+[System.IO.File]::WriteAllText("C:\Users\simon\Workspaces\gemini-brain\.gitignore", $gitignoreContent)

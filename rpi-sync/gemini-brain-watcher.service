@@ -1,0 +1,31 @@
+[Unit]
+Description=Gemini Brain Semantic AST & Markdown Sync Daemon (Raspberry Pi 5)
+Documentation=https://brain.tsimon.me/server-card
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=thomas
+Group=thomas
+WorkingDirectory=/opt/gemini-brain/rpi-sync
+Environment="BRAIN_MCP_URL=https://brain.tsimon.me/mcp"
+Environment="BRAIN_NAMESPACE=homelab"
+Environment="WATCH_DIRS=/opt/edge-rag-hub,/home/thomas/obsidian-vault"
+Environment="BRAIN_STATE_DB=/home/thomas/.cache/gemini-brain-sync.db"
+EnvironmentFile=/etc/gemini-brain/brain-watcher.env
+ExecStart=/opt/gemini-brain/rpi-sync/.venv/bin/python /opt/gemini-brain/rpi-sync/brain_watcher.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gemini-brain-watcher
+
+# Hardening for Debian 13 (Trixie) on Raspberry Pi 5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/thomas/.cache /opt/edge-rag-hub /home/thomas/obsidian-vault
+
+[Install]
+WantedBy=multi-user.target
