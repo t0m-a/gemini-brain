@@ -50,10 +50,13 @@ jobs:
           command: deploy
 
       - name: Verify live MCP Discovery Card on brain.tsimon.me
-        if: ${{ secrets.MCP_BEARER_TOKEN != '' }}
         env:
           MCP_BEARER_TOKEN: ${{ secrets.MCP_BEARER_TOKEN }}
         run: |
+          if [ -z "${MCP_BEARER_TOKEN}" ]; then
+            echo "MCP_BEARER_TOKEN secret is not set; skipping smoke test."
+            exit 0
+          fi
           echo "Waiting 5s for edge route propagation..."
           sleep 5
           HTTP_STATUS=$(curl -s -o /tmp/card.json -w "%{http_code}" \
