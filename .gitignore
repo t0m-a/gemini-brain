@@ -2,6 +2,7 @@ $gitignoreContent = @'
 # CLOUDFLARE WRANGLER & DURABLE OBJECT LOCAL STATE / SECRETS
 .dev.vars
 .dev.vars.*
+*.local.ps1
 .wrangler/
 wrangler.toml.bak
 
