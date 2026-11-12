@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 File: rpi-sync/brain_watcher.py
-Purpose: Raspberry Pi 5 (Debian 13 Trixie) AST & Markdown Semantic Chunker
-         syncing local repositories and Obsidian vaults to https://brain.tsimon.me/mcp
+Purpose: Raspberry Pi 5 (Debian 13 Trixie) AST, Markdown & Qdrant Federation Daemon
+         syncing local repositories, Obsidian vaults, and local Qdrant (knowledge_hub)
+         to https://brain.tsimon.me/mcp (BrainMemoryDO).
 """
 
 from __future__ import annotations
@@ -41,6 +42,17 @@ STATE_DB_PATH: Path = Path(
 DEBOUNCE_SECONDS: float = float(os.environ.get("BRAIN_DEBOUNCE_SEC", "2.5"))
 MAX_FILE_BYTES: int = int(os.environ.get("BRAIN_MAX_FILE_BYTES", "250000"))
 
+# Qdrant Federation Configuration (Raspberry Pi 5 Edge RAG Hub -> BrainMemoryDO)
+QDRANT_URL: str = os.environ.get("QDRANT_URL", "http://127.0.0.1:6333")
+QDRANT_API_KEY: str = os.environ.get("QDRANT_API_KEY", "")
+QDRANT_COLLECTION: str = os.environ.get("QDRANT_COLLECTION", "knowledge_hub")
+QDRANT_ENV_FALLBACK: Path = Path(
+    os.environ.get("QDRANT_ENV_FILE", "/opt/edge-rag-hub/.env")
+)
+QDRANT_SYNC_INTERVAL_SEC: float = float(
+    os.environ.get("QDRANT_SYNC_INTERVAL_SEC", "300.0")
+)
+
 IGNORED_DIRS: set[str] = {
     ".git",
     "node_modules",
@@ -51,6 +63,10 @@ IGNORED_DIRS: set[str] = {
     "dist",
     "build",
     ".obsidian",
+    "qdrant_data",
+    "qdrant_config",
+    "fastembed_cache",
+    "cloudflared_data",
 }
 SUPPORTED_EXTENSIONS: set[str] = {".py", ".md"}
 
@@ -60,6 +76,28 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("brain-watcher")
+
+
+def _load_qdrant_credentials() -> tuple[str, str]:
+    """Loads QDRANT_API_KEY and QDRANT_COLLECTION from env or /opt/edge-rag-hub/.env."""
+    api_key = QDRANT_API_KEY
+    collection = QDRANT_COLLECTION
+    if (not api_key or not collection) and QDRANT_ENV_FALLBACK.is_file():
+        try:
+            for raw_line in QDRANT_ENV_FALLBACK.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k == "QDRANT_API_KEY" and not api_key:
+                    api_key = v
+                elif k == "QDRANT_COLLECTION" and v:
+                    collection = v
+        except OSError as exc:
+            logger.debug("Could not read %s: %s", QDRANT_ENV_FALLBACK, exc)
+    return api_key, collection
 
 
 # =============================================================================
@@ -308,6 +346,181 @@ class BrainMcpClient:
 
 
 # =============================================================================
+# QDRANT -> BRAINMEMORYDO FEDERATION ENGINE
+# =============================================================================
+class QdrantBrainFederator:
+    """Scrolls points from Raspberry Pi 5 Qdrant and federates them into BrainMemoryDO."""
+
+    def __init__(
+        self,
+        qdrant_url: str,
+        api_key: str,
+        collection: str,
+        namespace: str,
+        state_db: LocalSyncStateDB,
+        mcp: BrainMcpClient,
+    ) -> None:
+        self.qdrant_url = qdrant_url.rstrip("/")
+        self.api_key = api_key
+        self.collection = collection
+        self.namespace = namespace
+        self.state_db = state_db
+        self.mcp = mcp
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["api-key"] = self.api_key
+        self.http = httpx.Client(timeout=20.0, headers=headers)
+
+    def sync_collection(self) -> int:
+        if not self.api_key:
+            logger.info("QDRANT_API_KEY not configured; skipping Qdrant federation pass.")
+            return 0
+
+        scroll_url = f"{self.qdrant_url}/collections/{self.collection}/points/scroll"
+        next_offset: str | int | None = None
+        synced_count = 0
+        scanned_count = 0
+
+        logger.info(
+            "Starting Qdrant -> BrainMemoryDO federation scan (%s/%s)...",
+            self.qdrant_url,
+            self.collection,
+        )
+
+        while True:
+            req_body: dict[str, Any] = {
+                "limit": 100,
+                "with_payload": True,
+                "with_vector": False,
+            }
+            if next_offset is not None:
+                req_body["offset"] = next_offset
+
+            try:
+                resp = self.http.post(scroll_url, json=req_body)
+                resp.raise_for_status()
+                data = resp.json().get("result", {})
+            except Exception as exc:
+                logger.warning("Qdrant scroll request failed: %s", exc)
+                break
+
+            points = data.get("points", [])
+            if not points:
+                break
+
+            for pt in points:
+                scanned_count += 1
+                point_id = str(pt.get("id", ""))
+                payload = pt.get("payload") or {}
+                content = str(payload.get("content") or "").strip()
+                if not point_id or not content:
+                    continue
+
+                raw_title = str(payload.get("title") or point_id).strip()
+                category = str(payload.get("category") or "General").strip()
+                source = str(payload.get("source") or f"qdrant/{point_id}").strip()
+
+                chunk_id = f"qdrant_{point_id}"
+                memory_type = "procedural" if "```" in content else "semantic"
+                title = f"[Qdrant/{category}] {raw_title}"
+                source_uri = f"qdrant://{self.collection}/{source}#{point_id[:8]}"
+
+                plain_lines = [
+                    line.strip()
+                    for line in content.splitlines()
+                    if line.strip() and not line.strip().startswith("#")
+                ]
+                summary = (plain_lines[0] if plain_lines else raw_title)[:240]
+
+                doc_entity_id = f"doc:{slugify(source)}"
+                cat_entity_id = f"category:{slugify(category)}"
+                triples: list[dict[str, str]] = [
+                    {
+                        "subjectId": doc_entity_id,
+                        "subjectName": source,
+                        "subjectType": "project",
+                        "relation": "CATEGORIZED_AS",
+                        "objectId": cat_entity_id,
+                        "objectName": f"Category: {category}",
+                        "objectType": "concept",
+                    },
+                    {
+                        "subjectId": doc_entity_id,
+                        "subjectName": source,
+                        "subjectType": "project",
+                        "relation": "FEDERATED_FROM",
+                        "objectId": "service:rpi5-qdrant-knowledge-hub",
+                        "objectName": f"RPi5 Qdrant ({self.collection} / rag.tsimon.me)",
+                        "objectType": "service",
+                    },
+                ]
+
+                for target in sorted(set(WIKILINK_RE.findall(content)))[:8]:
+                    triples.append(
+                        {
+                            "subjectId": doc_entity_id,
+                            "subjectName": source,
+                            "subjectType": "project",
+                            "relation": "LINKS_TO",
+                            "objectId": f"concept:{slugify(target)}",
+                            "objectName": target.strip(),
+                            "objectType": "concept",
+                        }
+                    )
+
+                chunk = SemanticChunk(
+                    chunk_id=chunk_id,
+                    namespace=self.namespace,
+                    memory_type=memory_type,
+                    title=title,
+                    content=content,
+                    summary=summary,
+                    source_uri=source_uri,
+                    importance=0.82,
+                    triples=triples,
+                )
+
+                sha = chunk.content_sha256
+                if self.state_db.is_unchanged(chunk.chunk_id, sha):
+                    continue
+
+                self.mcp.call_tool(
+                    "remember_fact",
+                    {
+                        "id": chunk.chunk_id,
+                        "namespace": chunk.namespace,
+                        "memoryType": chunk.memory_type,
+                        "title": chunk.title,
+                        "content": chunk.content,
+                        "summary": chunk.summary,
+                        "sourceUri": chunk.source_uri,
+                        "importance": chunk.importance,
+                        "triples": chunk.triples,
+                    },
+                )
+                self.state_db.mark_synced(chunk.chunk_id, chunk.source_uri, sha)
+                synced_count += 1
+                logger.info(
+                    "Federated Qdrant point [%s] %s (%d/%d)",
+                    self.collection,
+                    title,
+                    synced_count,
+                    scanned_count,
+                )
+
+            next_offset = data.get("next_page_offset")
+            if next_offset is None:
+                break
+
+        logger.info(
+            "Qdrant federation pass complete: scanned=%d, newly_synced=%d",
+            scanned_count,
+            synced_count,
+        )
+        return synced_count
+
+
+# =============================================================================
 # WATCHDOG EVENT HANDLER & INITIAL DIRECTORY SWEEP
 # =============================================================================
 class BrainSyncHandler(FileSystemEventHandler):
@@ -399,6 +612,16 @@ class BrainSyncHandler(FileSystemEventHandler):
 def main() -> None:
     state_db = LocalSyncStateDB(STATE_DB_PATH)
     mcp = BrainMcpClient(BRAIN_MCP_URL, MCP_BEARER_TOKEN)
+    qdrant_key, qdrant_collection = _load_qdrant_credentials()
+    federator = QdrantBrainFederator(
+        qdrant_url=QDRANT_URL,
+        api_key=qdrant_key,
+        collection=qdrant_collection,
+        namespace=DEFAULT_NAMESPACE,
+        state_db=state_db,
+        mcp=mcp,
+    )
+
     watch_dirs = [Path(p.strip()).expanduser() for p in WATCH_DIRS_RAW.split(",") if p.strip()]
 
     observer = Observer()
@@ -419,22 +642,32 @@ def main() -> None:
         observer.schedule(handler, str(directory), recursive=True)
         logger.info("Watching %s (namespace=%s)", directory, DEFAULT_NAMESPACE)
 
-    if total_initial_chunks > 0:
+    # Federate local Qdrant collection into BrainMemoryDO
+    total_qdrant_chunks = federator.sync_collection()
+    last_qdrant_sync = time.monotonic()
+
+    if (total_initial_chunks + total_qdrant_chunks) > 0:
         mcp.call_tool(
             "log_episodic_event",
             {
                 "sessionId": f"boot-{int(time.time())}",
                 "clientId": CLIENT_ID,
                 "eventType": "checkpoint",
-                "payload": f"Raspberry Pi 5 daemon synced {total_initial_chunks} new/updated AST & Markdown chunks.",
+                "payload": (
+                    f"Raspberry Pi 5 daemon synced {total_initial_chunks} filesystem chunks "
+                    f"and federated {total_qdrant_chunks} Qdrant ({qdrant_collection}) points."
+                ),
             },
         )
 
     observer.start()
-    logger.info("Raspberry Pi 5 Brain Watcher is active. Press Ctrl+C to stop.")
+    logger.info("Raspberry Pi 5 Brain Watcher + Qdrant Federator is active. Press Ctrl+C to stop.")
     try:
         while True:
             time.sleep(5)
+            if time.monotonic() - last_qdrant_sync >= QDRANT_SYNC_INTERVAL_SEC:
+                federator.sync_collection()
+                last_qdrant_sync = time.monotonic()
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
