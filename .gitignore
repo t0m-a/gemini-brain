@@ -1,4 +1,3 @@
-$gitignoreContent = @'
 # CLOUDFLARE WRANGLER & DURABLE OBJECT LOCAL STATE / SECRETS
 .dev.vars
 .dev.vars.*
@@ -47,5 +46,3 @@ Desktop.ini
 .idea/
 *.swp
 *~
-'@
-[System.IO.File]::WriteAllText("C:\Users\simon\Workspaces\gemini-brain\.gitignore", $gitignoreContent)

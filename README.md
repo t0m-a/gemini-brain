@@ -137,7 +137,7 @@ What makes Gemini Brain uniquely powerful is **Federation**—meaning you only a
 
 1. **World 1 — The Active Engineering Brain (`brain.tsimon.me`):** Everything you and your AI assistants have explicitly taught the Brain (facts, rules, mind-map relationships, and nightly summaries).
 2. **World 2 — The Historical Deep Archive (`kb.tsimon.me`):** Your massive existing archive database containing **14,422+ records** across company documents, emails, spreadsheets, scripts, and IT Glue CMDB records. Because both live on your Cloudflare account, `brain.tsimon.me` talks directly to `kb.tsimon.me` internally with **zero internet travel time**.
-3. **World 3 — Your Raspberry Pi 5 Home Lab (`192.168.1.14`):** A background helper program (`brain_watcher.py`) runs 24/7 on your Raspberry Pi 5. Whenever you edit a Python `.py` file or Markdown `.md` note on the Pi—or add items to your local **Qdrant** database (`knowledge_hub`)—the Pi automatically slices it into bite-sized pieces and uploads only what changed to `brain.tsimon.me`.
+3. **World 3 — Your Raspberry Pi 5 Home Lab (`pi.tsimon.me`):** A background helper program (`brain_watcher.py`) runs 24/7 on your Raspberry Pi 5. Whenever you edit a Python `.py` file or Markdown `.md` note on the Pi—or add items to your local **Qdrant** database (`knowledge_hub`)—the Pi automatically slices it into bite-sized pieces and uploads only what changed to `brain.tsimon.me`.
 
 ---
 
@@ -316,7 +316,7 @@ Invoke-RestMethod -Uri "https://brain.tsimon.me/mcp" -Method Post -Headers $head
 
 ## 3. Using the Brain on Your Raspberry Pi 5 (Hands-Free Auto-Sync)
 
-On your Raspberry Pi 5 (`ssh pi` -> `192.168.1.14`), the Brain works **completely hands-free** in the background via a Linux system service (`gemini-brain-watcher.service`):
+On your Raspberry Pi 5 (`ssh pi` -> `pi.tsimon.me`), the Brain works **completely hands-free** in the background via a Linux system service (`gemini-brain-watcher.service`):
 
 - **Save a Python file (`.py`):** Within **2.5 seconds**, the Pi reads every class and function (`def`), extracts its description (docstring), creates a Mind-Map link showing which file defines that function, and sends it to `brain.tsimon.me`.
 - **Save a Markdown note (`.md`):** Within **2.5 seconds**, the Pi splits your note by headings (`#`, `##`, `###`), finds any Obsidian-style `[[Wikilinks]]`, turns them into Mind-Map links, and sends them to `brain.tsimon.me`.
@@ -437,7 +437,7 @@ flowchart TB
         C_TEST["E2E Verifier (test_brain_mcp.py)"]
     end
 
-    subgraph RPi5["Raspberry Pi 5 Edge Node (192.168.1.14 / Debian 13)"]
+    subgraph RPi5["Raspberry Pi 5 Edge Node (pi.tsimon.me / Debian 13)"]
         FS["Watched Workspaces<br/>/opt/edge-rag-hub, /home/simon/Workspaces"]
         QD["Local Qdrant Server<br/>127.0.0.1:6333 (knowledge_hub)"]
         BW["brain_watcher.py Daemon<br/>AST + MD Chunker & Qdrant Federator<br/>clientId: rpi5-debian13-daemon"]
@@ -834,7 +834,7 @@ flowchart TD
 
 ## 🖥️ 1. System Administrator Guide (Linux / Windows / Operations)
 
-### 1.1 Raspberry Pi 5 (`192.168.1.14`, Debian 13 Trixie) Provisioning & Service Management
+### 1.1 Raspberry Pi 5 (`pi.tsimon.me`, Debian 13 Trixie) Provisioning & Service Management
 
 To install or update the edge sync daemon on the Raspberry Pi 5, clone the repository to `/opt/gemini-brain` and run [rpi-sync/install_rpi.sh](file:///c:/Users/simon/Workspaces/gemini-brain/rpi-sync/install_rpi.sh):
 
@@ -923,7 +923,7 @@ Register the server in `C:\Users\simon\.gemini\settings.json` and `C:\Users\simo
 | `VECTOR_INDEX` | Cloudflare Vectorize | `gemini-brain-bge-m3` (`1024` dimensions, `cosine`) | Primary semantic vector index for `BrainMemoryDO` memories, partitioned by `namespace`. |
 | `KB_DB` | Cloudflare D1 Database | `archive-knowledge-db` (`c0734505-169c-4997-a603-8b3c9d06cab0`) | Federated archive database containing `kb_fts` across 14,422+ documents, emails, spreadsheets, scripts, and IT Glue CMDB records. |
 | `KB_VECTORIZE` | Cloudflare Vectorize | `archive-kb-index` (`768` dimensions, `cosine`) | Federated semantic vector index for `kb.tsimon.me` archive chunks. |
-| `AI` | Cloudflare Workers AI | `@cf/baai/bge-m3` (`1024d`)<br/>`@cf/baai/bge-base-en-v1.5` (`768d`)<br/>`@cf/meta/llama-3.3-70b-instruct-fp8-fast` | On-edge neural inference for dual-model embeddings and nocturnal LLM consolidation. |
+| `AI` | Cloudflare Workers AI | `@cf/baai/bge-m3` (`1024d`)<br/>`@cf/baai/bge-base-en-v1.5` (`768d`)<br/>`@cf/baai/bge-reranker-base` *(provisioned)*<br/>`@cf/meta/llama-3.3-70b-instruct-fp8-fast` | On-edge neural inference for dual-model embeddings, optional cross-encoder reranking (`RERANKER_MODEL`), and nocturnal LLM consolidation. |
 
 ### 2.2 Dual-Model Vector Space Isolation & Canonical D1 Hydration (`ADR-04`)
 
@@ -1020,6 +1020,11 @@ $$\text{Salience}(e) = \left(\text{PR}(u) + \text{PR}(v)\right) \cdot w(e)$$
 During the `07:00 UTC` consolidation alarm, every entity $v \in V$'s centrality score is updated using a damped in-degree formulation:
 $$\text{PR}(v) = \min\left(1.0,\; 0.15 + 0.85 \times 0.1 \times \left|\{e = (u \to v) \in E : \text{valid\_until}(e) = \text{NULL}\}\right|\right)$$
 
+#### 4. Provisioned Cross-Encoder Neural Reranking Stage (`RERANKER_MODEL`)
+> [!TIP]
+> **Latency vs. Precision Trade-Off (`@cf/baai/bge-reranker-base`):**
+> [wrangler.jsonc](file:///c:/Users/simon/Workspaces/gemini-brain/wrangler.jsonc#L52) and `Env` ([src/memory-do.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L28)) pre-provision `RERANKER_MODEL = "@cf/baai/bge-reranker-base"`. By default, `fuseBrainAndKb()` executes pure 4-Way Weighted RRF ($k = 60$) in `< 1 ms` of CPU time to keep end-to-end federated `hybrid_recall` latency within the **~300–500 ms** envelope. When ultra-high precision over ambiguous queries is required, the top $N$ RRF-fused candidates (`orderedQueue.slice(0, 15)`) can be passed directly to `env.AI.run(env.RERANKER_MODEL, { query, contexts })` prior to Phase 4 token packing without altering any infrastructure bindings.
+
 ---
 
 ### 3.3 Attention-Optimal `<brain_context>` Token Packing Algorithm
@@ -1065,7 +1070,7 @@ To keep retrieval precision high across all clients, follow these conventions wh
 - **Standard Namespaces:**
   - `global`: Cross-cutting architectural standards, security policies, and universal tooling facts (automatically included alongside any project-specific namespace query).
   - `tsimon.me`: Personal cloud infrastructure, Cloudflare Workers, and domain services.
-  - `homelab`: Raspberry Pi 5 (`192.168.1.14`), local Docker/Qdrant stacks, WireGuard/LAN networking.
+  - `homelab`: Raspberry Pi 5 (`pi.tsimon.me`), local Docker/Qdrant stacks, WireGuard/LAN networking.
   - `minkalab.net`: Client/partner infrastructure and federated lab environments.
   - `ai-research`: Context engineering, LLM benchmarks, MCP specifications, and model tuning.
   - `career`: Portfolio, certifications, and professional documentation.
