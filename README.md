@@ -100,7 +100,7 @@ flowchart TD
 
     subgraph Storage["📚 The 3 Connected Knowledge Vaults"]
         V1["1. Active Brain Memory<br/>(Facts, Rules, Mind-Map & Daily Notes)"]
-        V2["2. Historical Deep Archive (kb.tsimon.me)<br/>(14,422+ Docs, Emails, Spreadsheets, IT Glue)"]
+        V2["2. Historical Deep Archive (kb.tsimon.me)<br/>(14,422+ Docs, Emails, Spreadsheets, CMDB items)"]
         V3["3. Home Lab Code & Notes (RPi5)<br/>(Python Code, Obsidian Notes & Qdrant)"]
     end
 
@@ -136,7 +136,7 @@ Just like a human brain stores different kinds of information in different ways,
 What makes Gemini Brain uniquely powerful is **Federation**—meaning you only ask **one question**, and the Brain searches across **three different worlds of data** at the exact same time:
 
 1. **World 1 — The Active Engineering Brain (`brain.tsimon.me`):** Everything you and your AI assistants have explicitly taught the Brain (facts, rules, mind-map relationships, and nightly summaries).
-2. **World 2 — The Historical Deep Archive (`kb.tsimon.me`):** Your massive existing archive database containing **14,422+ records** across company documents, emails, spreadsheets, scripts, and IT Glue CMDB records. Because both live on your Cloudflare account, `brain.tsimon.me` talks directly to `kb.tsimon.me` internally with **zero internet travel time**.
+2. **World 2 — The Historical Deep Archive (`kb.tsimon.me`):** Your massive existing archive database containing **14,422+ records** across company documents, emails, spreadsheets, scripts, and CMDB records. Because both live on your Cloudflare account, `brain.tsimon.me` talks directly to `kb.tsimon.me` internally with **zero internet travel time**.
 3. **World 3 — Your Raspberry Pi 5 Home Lab (`pi.tsimon.me`):** A background helper program (`brain_watcher.py`) runs 24/7 on your Raspberry Pi 5. Whenever you edit a Python `.py` file or Markdown `.md` note on the Pi—or add items to your local **Qdrant** database (`knowledge_hub`)—the Pi automatically slices it into bite-sized pieces and uploads only what changed to `brain.tsimon.me`.
 
 ---
@@ -203,7 +203,7 @@ Because `https://brain.tsimon.me/mcp` is registered in your local configuration 
 
 ### 🔍 Action A: Recall Context (`hybrid_recall`)
 Ask your AI to search your Brain and Archive before starting a task:
-> *"Use `hybrid_recall` to recall everything we have on Digilock Veeam backup retention and RPi5 firewall rules with a tokenBudget of 2500."*
+> *"Use `hybrid_recall` to recall everything we have on Veeam backup retention and RPi5 firewall rules with a tokenBudget of 2500."*
 
 ### 💡 Action B: Teach the Brain a Fact & Mind-Map Connection (`remember_fact`)
 Tell your AI to permanently save a configuration, guide, or code snippet:
@@ -476,7 +476,7 @@ flowchart TB
         AI_LLAMA["Workers AI: @cf/meta/llama-3.3-70b-instruct-fp8-fast<br/>(Nocturnal Episodic Synthesis)"]
         VEC_BRAIN[("Vectorize: gemini-brain-bge-m3<br/>(1024-dim Cosine Index)")]
         VEC_KB[("Vectorize: archive-kb-index<br/>(768-dim Cosine Index)")]
-        D1_KB[("D1: archive-knowledge-db<br/>kb_fts (14,422+ Docs, Emails, IT Glue)")]
+        D1_KB[("D1: archive-knowledge-db<br/>kb_fts (14,422+ Docs, Emails, CMDB)")]
     end
 
     C_AG & C_CLI & C_WEB & C_TEST -->|"HTTPS JSON-RPC 2.0 / SSE"| AUTH
@@ -921,7 +921,7 @@ Register the server in `C:\Users\simon\.gemini\settings.json` and `C:\Users\simo
 | :--- | :--- | :--- | :--- |
 | `BRAIN_DO` | Durable Object (`new_sqlite_classes`) | `BrainMemoryDO` (Migration tag: `v1`) | Strongly consistent single-threaded actor with embedded SQLite (`memories`, `memories_fts`, `entities`, `edges`, `decisions`, `episodic_logs`) and `alarm()` scheduler. |
 | `VECTOR_INDEX` | Cloudflare Vectorize | `gemini-brain-bge-m3` (`1024` dimensions, `cosine`) | Primary semantic vector index for `BrainMemoryDO` memories, partitioned by `namespace`. |
-| `KB_DB` | Cloudflare D1 Database | `archive-knowledge-db` (`c0734505-169c-4997-a603-8b3c9d06cab0`) | Federated archive database containing `kb_fts` across 14,422+ documents, emails, spreadsheets, scripts, and IT Glue CMDB records. |
+| `KB_DB` | Cloudflare D1 Database | `archive-knowledge-db` (`c0734505-169c-4997-a603-8b3c9d06cab0`) | Federated archive database containing `kb_fts` across 14,422+ documents, emails, spreadsheets, scripts, and CMDB records. |
 | `KB_VECTORIZE` | Cloudflare Vectorize | `archive-kb-index` (`768` dimensions, `cosine`) | Federated semantic vector index for `kb.tsimon.me` archive chunks. |
 | `AI` | Cloudflare Workers AI | `@cf/baai/bge-m3` (`1024d`)<br/>`@cf/baai/bge-base-en-v1.5` (`768d`)<br/>`@cf/baai/bge-reranker-base` *(provisioned)*<br/>`@cf/meta/llama-3.3-70b-instruct-fp8-fast` | On-edge neural inference for dual-model embeddings, optional cross-encoder reranking (`RERANKER_MODEL`), and nocturnal LLM consolidation. |
 
@@ -1056,7 +1056,7 @@ Large Language Models exhibit a U-shaped attention curve ("Lost in the Middle"),
 #### [BRAIN] [tsimon.me] E2E Federation Verification (RRF: 0.0472 | via: brain_fts+brain_vec | uri: mcp://test_brain_mcp.py)
 The Cross-Client Brain at brain.tsimon.me is actively federated with kb.tsimon.me via Cloudflare D1 (archive-knowledge-db) and Vectorize...
 
-#### [KB] Veeam Backup Retention Policy [Backup & DR] (Digilock) (RRF: 0.0361 | via: kb_fts+kb_vec | uri: https://kb.tsimon.me/doc/...)
+#### [KB] Veeam Backup Retention Policy [Backup & DR] (organization) (RRF: 0.0361 | via: kb_fts+kb_vec | uri: https://kb.tsimon.me/doc/...)
 ...
 </brain_context>
 ```
