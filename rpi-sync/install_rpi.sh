@@ -25,12 +25,25 @@ EOF
   echo "IMPORTANT: Update MCP_BEARER_TOKEN in ${ENV_FILE}"
 fi
 
-echo "=== [3/4] Installing systemd unit ==="
+echo "=== [3/5] Installing systemd unit ==="
 sudo cp "${REPO_DIR}/rpi-sync/gemini-brain-watcher.service" /etc/systemd/system/gemini-brain-watcher.service
 sudo sed -i "s/^User=.*/User=$(whoami)/" /etc/systemd/system/gemini-brain-watcher.service
 sudo systemctl daemon-reload
 sudo systemctl enable gemini-brain-watcher.service
 
-echo "=== [4/4] Starting gemini-brain-watcher.service ==="
+echo "=== [4/5] Installing /usr/local/bin/brain-monitor CLI wrapper ==="
+sudo tee /usr/local/bin/brain-monitor > /dev/null << EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -f "${ENV_FILE}" ]; then
+  set -a
+  source "${ENV_FILE}"
+  set +a
+fi
+exec python3 "${REPO_DIR}/brain_monitor.py" "\$@"
+EOF
+sudo chmod +x /usr/local/bin/brain-monitor
+
+echo "=== [5/5] Starting gemini-brain-watcher.service ==="
 sudo systemctl restart gemini-brain-watcher.service
 sudo systemctl status gemini-brain-watcher.service --no-pager

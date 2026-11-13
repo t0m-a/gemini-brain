@@ -30,6 +30,8 @@ HUMAN_CONTEXT_ARCHITECTURE.md
 03_Context_Engineering_Blueprint_Study_Guide.md
 thomas_simon_gemma4_context.md
 gemma4_master_context_compiled.md
+takeout-staging/
+takeout-output/
 
 # ENVIRONMENT SECRETS & KEYS
 .env

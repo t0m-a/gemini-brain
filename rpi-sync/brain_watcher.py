@@ -67,6 +67,8 @@ IGNORED_DIRS: set[str] = {
     "qdrant_config",
     "fastembed_cache",
     "cloudflared_data",
+    "takeout-staging",
+    "takeout-output",
 }
 SUPPORTED_EXTENSIONS: set[str] = {".py", ".md"}
 
@@ -494,6 +496,7 @@ class QdrantBrainFederator:
                         "content": chunk.content,
                         "summary": chunk.summary,
                         "sourceUri": chunk.source_uri,
+                        "clientId": f"{CLIENT_ID}-qdrant",
                         "importance": chunk.importance,
                         "triples": chunk.triples,
                     },
@@ -586,6 +589,7 @@ class BrainSyncHandler(FileSystemEventHandler):
                     "content": chunk.content,
                     "summary": chunk.summary,
                     "sourceUri": chunk.source_uri,
+                    "clientId": CLIENT_ID,
                     "importance": chunk.importance,
                     "triples": chunk.triples,
                 },

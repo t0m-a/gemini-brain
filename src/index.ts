@@ -8,7 +8,11 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
 import { BrainMemoryDO, type Env } from "./memory-do";
-import { KbFederationService } from "./federation";
+import {
+  KbFederationService,
+  ingestKbArchiveBatch,
+  type KbArchiveIngestItem
+} from "./federation";
 
 export { BrainMemoryDO, KbFederationService };
 
@@ -24,7 +28,60 @@ function createBrainMcpServer(env: Env) {
     return env.BRAIN_DO.get(id);
   };
 
-  // Tool 1 (Alphabetical Order #1): hybrid_recall
+  // Tool 1 (Alphabetical Order #1): get_overnight_diff
+  server.registerTool(
+    "get_overnight_diff",
+    {
+      description:
+        "Retrieve overnight mutations, before/after diffs of modified facts, nocturnal 03:00 AM consolidation digests, and newly logged ADRs from the last N hours to hydrate your first morning coding session in Gemini, VS Code, or Antigravity.",
+      inputSchema: z.object({
+        hours: z
+          .number()
+          .min(1)
+          .max(720)
+          .optional()
+          .describe("Lookback window in hours (default: 12)"),
+        clientId: z
+          .string()
+          .optional()
+          .describe("Optional filter by clientId (e.g., 'rpi5-debian13-daemon', 'antigravity-win11-1', 'gemini-cli')"),
+        namespace: z
+          .string()
+          .optional()
+          .describe("Optional filter by namespace ('global', 'tsimon.me', 'minkalab.net', 'homelab')"),
+        operation: z
+          .enum(["ALL", "INSERT", "UPDATE", "DELETE", "CONSOLIDATE", "ROLLBACK"])
+          .optional()
+          .describe("Optional filter by mutation operation type (default: 'ALL')"),
+        format: z
+          .enum(["markdown", "json"])
+          .optional()
+          .describe("Output format: 'markdown' for LLM session hydration (default) or 'json' for full before/after diffs")
+      })
+    },
+    async (args) => {
+      const stub = getBrainStub();
+      const result = await stub.getOvernightDiff({
+        hours: args.hours ?? 12,
+        clientId: args.clientId,
+        namespace: args.namespace,
+        operation: args.operation ?? "ALL"
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              args.format === "json"
+                ? JSON.stringify(result, null, 2)
+                : result.hydrationMarkdown
+          }
+        ]
+      };
+    }
+  );
+
+  // Tool 2 (Alphabetical Order #2): hybrid_recall
   server.registerTool(
     "hybrid_recall",
     {
@@ -60,7 +117,7 @@ function createBrainMcpServer(env: Env) {
     }
   );
 
-  // Tool 2 (Alphabetical Order #2): log_decision
+  // Tool 3 (Alphabetical Order #3): log_decision
   server.registerTool(
     "log_decision",
     {
@@ -91,7 +148,7 @@ function createBrainMcpServer(env: Env) {
     }
   );
 
-  // Tool 3 (Alphabetical Order #3): log_episodic_event
+  // Tool 4 (Alphabetical Order #4): log_episodic_event
   server.registerTool(
     "log_episodic_event",
     {
@@ -122,7 +179,7 @@ function createBrainMcpServer(env: Env) {
     }
   );
 
-  // Tool 4 (Alphabetical Order #4): remember_fact
+  // Tool 5 (Alphabetical Order #5): remember_fact
   server.registerTool(
     "remember_fact",
     {
@@ -148,12 +205,21 @@ function createBrainMcpServer(env: Env) {
           .string()
           .optional()
           .describe("Originating file path, git commit, or URL"),
+        clientId: z
+          .string()
+          .optional()
+          .describe("Client identifier for mutation audit tracking (e.g., 'antigravity-win11-1', 'rpi5-debian13-daemon')"),
         importance: z
           .number()
           .min(0)
           .max(1)
           .optional()
           .describe("Salience weight from 0.0 to 1.0"),
+        createdAt: z
+          .number()
+          .int()
+          .optional()
+          .describe("Optional original Unix epoch timestamp in seconds for historical records"),
         triples: z
           .array(
             z.object({
@@ -232,6 +298,31 @@ function createBrainMcpServer(env: Env) {
     }
   );
 
+  // Resource 3: brain://audit/overnight
+  server.registerResource(
+    "overnight-diff",
+    "brain://audit/overnight",
+    {
+      title: "Overnight Brain Diff & Morning Hydration Briefing",
+      description:
+        "Recent memory mutations, before/after state summary, ADRs, and 03:00 AM nocturnal consolidation digests from the last 12 hours.",
+      mimeType: "text/markdown"
+    },
+    async (uri) => {
+      const stub = getBrainStub();
+      const diff = await stub.getOvernightDiff({ hours: 12 });
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "text/markdown",
+            text: diff.hydrationMarkdown
+          }
+        ]
+      };
+    }
+  );
+
   // Prompt 1: checkpoint-session
   server.registerPrompt(
     "checkpoint-session",
@@ -266,6 +357,41 @@ function createBrainMcpServer(env: Env) {
     })
   );
 
+  // Prompt 2: hydrate-morning-session
+  server.registerPrompt(
+    "hydrate-morning-session",
+    {
+      title: "Hydrate Morning Coding Session with Overnight Changes",
+      description:
+        "Pull the last 12-24 hours of memory mutations, RPi5 daemon syncs, and 03:00 AM consolidation digests to ground your first morning session.",
+      argsSchema: z.object({
+        hours: z
+          .string()
+          .optional()
+          .describe("Lookback window in hours (default: '12')"),
+        namespace: z
+          .string()
+          .optional()
+          .describe("Optional project namespace to focus on (e.g., 'homelab', 'tsimon.me')")
+      })
+    },
+    ({ hours, namespace }) => ({
+      messages: [
+        {
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text:
+              `Hydrate this morning's coding session with recent state changes from the Knowledge Brain.\n\n` +
+              `1. Invoke \`get_overnight_diff\` with \`hours: ${Number(hours) || 12}\`${namespace ? ` and \`namespace: "${namespace}"\`` : ""}.\n` +
+              `2. Summarize the key overnight mutations, Raspberry Pi 5 daemon syncs, new ADRs, and any nocturnal consolidation digests.\n` +
+              `3. Highlight any modified facts or pending episodic events relevant to today's work.`
+          }
+        }
+      ]
+    })
+  );
+
   return server;
 }
 
@@ -292,14 +418,114 @@ export default {
     ) {
       return Response.json({
         name: "gemini-brain-mcp",
-        version: "1.1.0",
+        version: "1.2.0",
         endpoint: `https://brain.${env.PRIMARY_DOMAIN}/mcp`,
         federated_sources: [
           "brain.tsimon.me (BrainMemoryDO + gemini-brain-bge-m3 1024-dim + RPi5 Qdrant)",
           "kb.tsimon.me (D1 archive-knowledge-db + archive-kb-index 768-dim)"
         ],
-        tools: ["hybrid_recall", "log_decision", "log_episodic_event", "remember_fact"]
+        tools: [
+          "get_overnight_diff",
+          "hybrid_recall",
+          "log_decision",
+          "log_episodic_event",
+          "remember_fact"
+        ]
       });
+    }
+
+    const getBrainStub = () => {
+      const id = env.BRAIN_DO.idFromName("thomas-simon-primary-brain");
+      return env.BRAIN_DO.get(id);
+    };
+
+    // Authenticated Terminal Audit & Control Routes (/audit/*)
+    if (url.pathname === "/audit/diff") {
+      const params =
+        request.method === "POST"
+          ? ((await request.json().catch(() => ({}))) as Parameters<
+              BrainMemoryDO["getOvernightDiff"]
+            >[0])
+          : {
+              hours: url.searchParams.get("hours")
+                ? Number(url.searchParams.get("hours"))
+                : undefined,
+              clientId: url.searchParams.get("clientId") ?? undefined,
+              namespace: url.searchParams.get("namespace") ?? undefined,
+              memoryId: url.searchParams.get("memoryId") ?? undefined,
+              operation: (url.searchParams.get("operation") ?? undefined) as
+                | "ALL"
+                | "INSERT"
+                | "UPDATE"
+                | "DELETE"
+                | "CONSOLIDATE"
+                | "ROLLBACK"
+                | undefined,
+              limit: url.searchParams.get("limit")
+                ? Number(url.searchParams.get("limit"))
+                : undefined
+            };
+      const result = await getBrainStub().getOvernightDiff(params);
+      return Response.json(result);
+    }
+
+    if (url.pathname === "/audit/logs") {
+      const params =
+        request.method === "POST"
+          ? ((await request.json().catch(() => ({}))) as Parameters<
+              BrainMemoryDO["getConsolidationLogs"]
+            >[0])
+          : {
+              hours: url.searchParams.get("hours")
+                ? Number(url.searchParams.get("hours"))
+                : undefined,
+              clientId: url.searchParams.get("clientId") ?? undefined,
+              pendingOnly: url.searchParams.get("pendingOnly") === "true",
+              limit: url.searchParams.get("limit")
+                ? Number(url.searchParams.get("limit"))
+                : undefined
+            };
+      const result = await getBrainStub().getConsolidationLogs(params);
+      return Response.json(result);
+    }
+
+    if (request.method === "POST" && url.pathname === "/audit/rollback") {
+      const body = (await request.json().catch(() => ({}))) as Parameters<
+        BrainMemoryDO["rollbackMutation"]
+      >[0];
+      const result = await getBrainStub().rollbackMutation(body);
+      return Response.json(result, { status: result.ok ? 200 : 400 });
+    }
+
+    if (request.method === "POST" && url.pathname === "/audit/reindex") {
+      const body = (await request.json().catch(() => ({}))) as Parameters<
+        BrainMemoryDO["reindexMemories"]
+      >[0];
+      const result = await getBrainStub().reindexMemories(body);
+      return Response.json(result);
+    }
+
+    if (request.method === "POST" && url.pathname === "/audit/consolidate") {
+      const body = (await request.json().catch(() => ({}))) as { triggerSource?: string };
+      const result = await getBrainStub().runConsolidationNow(
+        body.triggerSource || "manual_cli"
+      );
+      return Response.json(result);
+    }
+
+    // Authenticated High-Throughput Batch Ingestion Routes (Tier 1 Brain + Tier 2 KB Archive)
+    if (request.method === "POST" && url.pathname === "/ingest/brain-batch") {
+      const body = (await request.json()) as {
+        items: Parameters<BrainMemoryDO["rememberFactsBatch"]>[0];
+      };
+      const result = await getBrainStub().rememberFactsBatch(body.items ?? []);
+      return Response.json(result);
+    }
+
+    if (request.method === "POST" && url.pathname === "/ingest/kb-batch") {
+      const body = (await request.json()) as { items: KbArchiveIngestItem[] };
+      const result = await ingestKbArchiveBatch(env, body.items ?? []);
+      return Response.json(result);
     }
 
     return createMcpHandler(() => createBrainMcpServer(env))(request, env, ctx);

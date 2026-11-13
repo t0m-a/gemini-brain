@@ -115,6 +115,48 @@ CREATE TABLE IF NOT EXISTS episodic_logs (
 
 CREATE INDEX IF NOT EXISTS idx_episodic_unconsolidated
     ON episodic_logs(consolidated, created_at ASC);
+
+-- 7. Memory Mutation Audit Trail (Before/After Diffs, Client Attribution & Atomic Rollback)
+CREATE TABLE IF NOT EXISTS memory_mutations (
+    mutation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id TEXT NOT NULL,
+    namespace TEXT NOT NULL DEFAULT 'global',
+    memory_type TEXT NOT NULL DEFAULT 'semantic',
+    operation TEXT NOT NULL,                  -- 'INSERT' | 'UPDATE' | 'DELETE' | 'CONSOLIDATE' | 'ROLLBACK'
+    client_id TEXT NOT NULL DEFAULT 'mcp-client',
+    old_title TEXT,
+    old_content TEXT,
+    old_summary TEXT,
+    old_importance REAL,
+    new_title TEXT,
+    new_content TEXT,
+    new_summary TEXT,
+    new_importance REAL,
+    source_uri TEXT,
+    rolled_back INTEGER NOT NULL DEFAULT 0,   -- 1 if this mutation was subsequently rolled back
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_mutations_created
+    ON memory_mutations(created_at DESC, namespace, operation);
+CREATE INDEX IF NOT EXISTS idx_mutations_memory
+    ON memory_mutations(memory_id, mutation_id DESC);
+
+-- 8. Nocturnal Consolidation Execution Runs (03:00 AM Sleep Cycle & Manual Triggers)
+CREATE TABLE IF NOT EXISTS consolidation_runs (
+    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    digest_memory_id TEXT,
+    events_count INTEGER NOT NULL DEFAULT 0,
+    clients_json TEXT NOT NULL DEFAULT '[]',
+    log_ids_json TEXT NOT NULL DEFAULT '[]',
+    digest_title TEXT,
+    digest_content TEXT,
+    trigger_source TEXT NOT NULL DEFAULT 'alarm_0300',
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_consolidation_runs_created
+    ON consolidation_runs(created_at DESC);
 `;
 
 /**

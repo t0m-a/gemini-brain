@@ -56,6 +56,24 @@ export interface KbHydrationRow {
   modified_iso: string | null;
 }
 
+export interface KbArchiveIngestItem {
+  id: string;
+  relPath: string;
+  filename: string;
+  extension: string;
+  topFolder: string;
+  subFolder: string;
+  modifiedIso: string;
+  sourceType: string;
+  primaryTheme: string;
+  subThemes?: string;
+  clientCode?: string;
+  organizationName?: string;
+  title: string;
+  summaryPreview?: string;
+  content: string;
+}
+
 const RRF_K = 60;
 const DECAY_LAMBDA = 0.015; // ~46-day half-life for episodic decay
 
@@ -514,5 +532,137 @@ export function fuseBrainAndKb(params: {
     kbCount,
     graphTriplesCount,
     candidates: selectedCandidates
+  };
+}
+
+/**
+ * Batch-ingests Long-Term Archive documents into D1 (archive-knowledge-db: files + kb_fts)
+ * and Vectorize (archive-kb-index: 768-dim @cf/baai/bge-base-en-v1.5).
+ */
+export async function ingestKbArchiveBatch(
+  env: Env,
+  items: KbArchiveIngestItem[]
+): Promise<{
+  ingestedD1: number;
+  indexedVectors: number;
+  ids: string[];
+}> {
+  if (!items || items.length === 0) {
+    return { ingestedD1: 0, indexedVectors: 0, ids: [] };
+  }
+
+  const kbEmbeddingModel =
+    (env.KB_EMBEDDING_MODEL as "@cf/baai/bge-base-en-v1.5") ||
+    "@cf/baai/bge-base-en-v1.5";
+  const nowIso = new Date().toISOString();
+
+  // 1. Batch-upsert into D1 (files + kb_fts)
+  const statements: D1PreparedStatement[] = [];
+  for (const item of items) {
+    const sizeBytes = new TextEncoder().encode(item.content).length;
+    const summaryPreview =
+      item.summaryPreview || item.content.slice(0, 320).replace(/\s+/g, " ").trim();
+    const subThemes = item.subThemes || "[]";
+    const clientCode = item.clientCode || "";
+    const orgName = item.organizationName || "";
+
+    statements.push(
+      env.KB_DB.prepare(
+        `INSERT INTO files (
+          rel_path, filename, extension, top_folder, sub_folder, size_bytes,
+          modified_iso, status, primary_theme, all_themes, sub_themes,
+          client_code, organization_name, tickets, title_or_subject,
+          summary_preview, extracted_text, custom_tags, curated_notes, starred, last_updated
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'indexed', ?8, ?9, ?10, ?11, ?12, '', ?13, ?14, ?15, '["google-takeout"]', '', 0, ?16)
+        ON CONFLICT(rel_path) DO UPDATE SET
+          size_bytes = excluded.size_bytes,
+          modified_iso = excluded.modified_iso,
+          primary_theme = excluded.primary_theme,
+          sub_themes = excluded.sub_themes,
+          title_or_subject = excluded.title_or_subject,
+          summary_preview = excluded.summary_preview,
+          extracted_text = excluded.extracted_text,
+          last_updated = excluded.last_updated`
+      ).bind(
+        item.relPath,
+        item.filename,
+        item.extension,
+        item.topFolder,
+        item.subFolder,
+        sizeBytes,
+        item.modifiedIso,
+        item.primaryTheme,
+        JSON.stringify([item.primaryTheme]),
+        subThemes,
+        clientCode,
+        orgName,
+        item.title,
+        summaryPreview,
+        item.content,
+        nowIso
+      )
+    );
+
+    // Ensure idempotent FTS5 replacement by rel_path
+    statements.push(
+      env.KB_DB.prepare(`DELETE FROM kb_fts WHERE rel_path = ?1`).bind(item.relPath)
+    );
+
+    statements.push(
+      env.KB_DB.prepare(
+        `INSERT INTO kb_fts (
+          source_type, ref_id, rel_path, title, primary_theme,
+          sub_themes, client_code, organization_name, tickets, content
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '', ?9)`
+      ).bind(
+        item.sourceType,
+        item.id,
+        item.relPath,
+        item.title,
+        item.primaryTheme,
+        subThemes,
+        clientCode,
+        orgName,
+        item.content
+      )
+    );
+  }
+
+  await env.KB_DB.batch(statements);
+
+  // 2. Generate 768-dim dense vectors in a single Workers AI batch call & upsert into archive-kb-index
+  const texts = items.map(
+    (item) => `${item.title}\nTheme: ${item.primaryTheme}\n${item.content.slice(0, 3200)}`
+  );
+  const embRes = (await env.AI.run(kbEmbeddingModel, {
+    text: texts
+  })) as { data: number[][] };
+
+  const vectorRecords: VectorizeVector[] = [];
+  items.forEach((item, idx) => {
+    const values = embRes.data?.[idx];
+    if (values && values.length === 768) {
+      vectorRecords.push({
+        id: item.id.slice(0, 64),
+        values,
+        metadata: {
+          rel_path: item.relPath,
+          title: item.title,
+          primary_theme: item.primaryTheme,
+          client_code: item.clientCode || "",
+          source_type: item.sourceType
+        }
+      });
+    }
+  });
+
+  if (vectorRecords.length > 0) {
+    await env.KB_VECTORIZE.upsert(vectorRecords);
+  }
+
+  return {
+    ingestedD1: items.length,
+    indexedVectors: vectorRecords.length,
+    ids: items.map((i) => i.id)
   };
 }
