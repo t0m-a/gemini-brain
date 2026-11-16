@@ -31,7 +31,14 @@ export interface FusedContextResult {
   brainCount: number;
   kbCount: number;
   graphTriplesCount: number;
-  candidates: Array<RankedCandidate & { rrfScore: number; sources: string[] }>;
+  reranked: boolean;
+  candidates: Array<
+    RankedCandidate & {
+      rrfScore: number;
+      rerankScore?: number;
+      sources: string[];
+    }
+  >;
 }
 
 export interface KbFtsRow {
@@ -307,13 +314,16 @@ export class KbFederationService extends WorkerEntrypoint<Env> {
 }
 
 /**
- * 4-Way Weighted Reciprocal Rank Fusion (RRF) combining:
+ * 4-Way Weighted Reciprocal Rank Fusion (RRF) + Stage-2 Cross-Encoder Reranking combining:
  *   1. brain_fts (Durable Object SQLite FTS5 BM25)
  *   2. brain_vec (Cloudflare Vectorize 1024-dim @cf/baai/bge-m3 + KG Expansion)
  *   3. kb_fts    (D1 archive-knowledge-db kb_fts BM25)
  *   4. kb_vec    (Cloudflare Vectorize 768-dim @cf/baai/bge-base-en-v1.5)
+ *   + Stage-2 Cross-Encoder Neural Reranker (@cf/baai/bge-reranker-base)
  */
-export function fuseBrainAndKb(params: {
+export async function fuseBrainAndKb(params: {
+  env?: Env;
+  query?: string;
   brainFts: RankedCandidate[];
   brainVec: RankedCandidate[];
   kbFts: RankedCandidate[];
@@ -327,7 +337,7 @@ export function fuseBrainAndKb(params: {
     kb_fts: number;
     kb_vec: number;
   };
-}): FusedContextResult {
+}): Promise<FusedContextResult> {
   const weights = params.weights ?? {
     brain_fts: 1.15,
     brain_vec: 1.15,
@@ -337,7 +347,11 @@ export function fuseBrainAndKb(params: {
 
   const merged = new Map<
     string,
-    RankedCandidate & { rrfScore: number; sources: string[] }
+    RankedCandidate & {
+      rrfScore: number;
+      rerankScore?: number;
+      sources: string[];
+    }
   >();
 
   const nowMs = Date.now();
@@ -379,7 +393,13 @@ export function fuseBrainAndKb(params: {
   ingestList(params.kbVec, weights.kb_vec, "kb_vec");
 
   // Apply Importance Boost & Temporal Decay (curated KB docs have decay = 1.0)
-  const finalRanked = Array.from(merged.values()).map((doc) => {
+  const finalRanked: Array<
+    RankedCandidate & {
+      rrfScore: number;
+      rerankScore?: number;
+      sources: string[];
+    }
+  > = Array.from(merged.values()).map((doc) => {
     const ageDays = Math.max(0, (nowMs - doc.updatedAtMs) / 86_400_000);
     const decayFactor =
       doc.origin === "kb.tsimon.me" ? 1.0 : Math.exp(-DECAY_LAMBDA * ageDays);
@@ -392,6 +412,69 @@ export function fuseBrainAndKb(params: {
   });
 
   finalRanked.sort((a, b) => b.rrfScore - a.rrfScore);
+
+  // Stage-2 Cross-Encoder Neural Reranking (@cf/baai/bge-reranker-base) over Top-16 RRF Candidates
+  let reranked = false;
+  if (params.env?.AI && params.query && finalRanked.length > 1) {
+    const rerankerModel =
+      (params.env.RERANKER_MODEL as "@cf/baai/bge-reranker-base") ||
+      "@cf/baai/bge-reranker-base";
+    const poolSize = Math.min(16, finalRanked.length);
+    const rerankPool = finalRanked.slice(0, poolSize);
+
+    try {
+      const rerankRes = (await params.env.AI.run(
+        rerankerModel,
+        {
+          query: params.query,
+          top_k: poolSize,
+          contexts: rerankPool.map((doc) => ({
+            text: `${doc.title}\n${doc.content.slice(0, 900)}`
+          }))
+        } as never
+      )) as {
+        response?: Array<{ id?: number; score?: number }>;
+        data?: Array<{ id?: number; score?: number }>;
+      };
+
+      const rawScores = rerankRes?.response ?? rerankRes?.data ?? [];
+      if (rawScores.length > 0) {
+        const validScores = rawScores
+          .map((r) => (typeof r.score === "number" ? r.score : null))
+          .filter((s): s is number => s !== null && Number.isFinite(s));
+
+        if (validScores.length > 0) {
+          const minScore = Math.min(...validScores);
+          const maxScore = Math.max(...validScores);
+          const span = maxScore - minScore;
+
+          for (const item of rawScores) {
+            if (
+              typeof item.id === "number" &&
+              item.id >= 0 &&
+              item.id < rerankPool.length &&
+              typeof item.score === "number" &&
+              Number.isFinite(item.score)
+            ) {
+              const candidate = rerankPool[item.id];
+              candidate.rerankScore = item.score;
+              const normScore =
+                span > 1e-6
+                  ? (item.score - minScore) / span
+                  : Math.max(0, Math.min(1, item.score));
+              candidate.rrfScore =
+                candidate.rrfScore * (1.0 + 0.55 * normScore);
+            }
+          }
+
+          finalRanked.sort((a, b) => b.rrfScore - a.rrfScore);
+          reranked = true;
+        }
+      }
+    } catch {
+      // Non-fatal fallback to Stage-1 4-way RRF ranking if Cross-Encoder invocation fails
+    }
+  }
 
   // Assemble Token-Budgeted <brain_context> XML Block
   let usedTokens = 0;
@@ -435,18 +518,29 @@ export function fuseBrainAndKb(params: {
   // 3. Pack Fused Chunks (Brain + KB) within remaining token budget
   // Guarantee representation from both Brain and KB when both have hits so neither pool starves the other
   const selectedCandidates: Array<
-    RankedCandidate & { rrfScore: number; sources: string[] }
+    RankedCandidate & {
+      rrfScore: number;
+      rerankScore?: number;
+      sources: string[];
+    }
   > = [];
   const chunkLines: string[] = [];
   let brainCount = 0;
   let kbCount = 0;
 
-  // Guarantee the true #1 rank from each of the 4 signal lists (brainFts[0], brainVec[0], kbFts[0], kbVec[0])
-  // is placed at the front of the packing queue before remaining RRF-sorted candidates
+  // Guarantee the top reranked Brain & KB leaders + true #1 rank from each of the 4 signal lists
+  // are placed at the front of the packing queue before remaining sorted candidates
   const findById = (prefix: "brain" | "kb", rawId?: string) =>
     rawId ? finalRanked.find((d) => d.id === `${prefix}:${rawId}`) : undefined;
 
+  const topRerankedBrain = finalRanked.find(
+    (d) => d.origin === "brain.tsimon.me"
+  );
+  const topRerankedKb = finalRanked.find((d) => d.origin === "kb.tsimon.me");
+
   const topSignalLeaders = [
+    topRerankedBrain,
+    topRerankedKb,
     findById("brain", params.brainFts[0]?.id),
     findById("brain", params.brainVec[0]?.id),
     findById("kb", params.kbFts[0]?.id),
@@ -454,7 +548,11 @@ export function fuseBrainAndKb(params: {
   ].filter((d): d is NonNullable<typeof d> => Boolean(d));
 
   const orderedQueue: Array<
-    RankedCandidate & { rrfScore: number; sources: string[] }
+    RankedCandidate & {
+      rrfScore: number;
+      rerankScore?: number;
+      sources: string[];
+    }
   > = [];
   const queuedIds = new Set<string>();
 
@@ -484,7 +582,11 @@ export function fuseBrainAndKb(params: {
         ? `${rawBody.slice(0, maxFullBodyChars)}...`
         : rawBody;
 
-    const entry = `#### ${badge} ${doc.title} (RRF: ${doc.rrfScore.toFixed(4)} | via: ${doc.sources.join("+")} | uri: ${doc.uri})\n${fullBody}`;
+    const rerankTag =
+      typeof doc.rerankScore === "number"
+        ? ` | Rerank: ${doc.rerankScore.toFixed(3)}`
+        : "";
+    const entry = `#### ${badge} ${doc.title} (RRF: ${doc.rrfScore.toFixed(4)}${rerankTag} | via: ${doc.sources.join("+")} | uri: ${doc.uri})\n${fullBody}`;
     const entryTokens = estimateTokens(entry);
 
     if (usedTokens + entryTokens <= params.tokenBudget) {
@@ -501,7 +603,7 @@ export function fuseBrainAndKb(params: {
 
     // Try condensed fallback if full text exceeds remaining budget
     const condensedBody = (doc.summary || doc.content).slice(0, 220);
-    const condensedEntry = `- **${badge} ${doc.title}** (${doc.uri}, RRF: ${doc.rrfScore.toFixed(4)}): ${condensedBody}`;
+    const condensedEntry = `- **${badge} ${doc.title}** (${doc.uri}, RRF: ${doc.rrfScore.toFixed(4)}${rerankTag}): ${condensedBody}`;
     const condensedTokens = estimateTokens(condensedEntry);
     if (usedTokens + condensedTokens <= params.tokenBudget) {
       chunkLines.push(condensedEntry);
@@ -521,7 +623,7 @@ export function fuseBrainAndKb(params: {
     );
   }
 
-  const contextBlock = `<brain_context federated="true" tokens_used="${usedTokens}" token_budget="${params.tokenBudget}" brain_matches="${brainCount}" kb_matches="${kbCount}">\n${sections.join("\n\n")}\n</brain_context>`;
+  const contextBlock = `<brain_context federated="true" reranked="${reranked}" tokens_used="${usedTokens}" token_budget="${params.tokenBudget}" brain_matches="${brainCount}" kb_matches="${kbCount}">\n${sections.join("\n\n")}\n</brain_context>`;
 
   return {
     contextBlock,
@@ -531,6 +633,7 @@ export function fuseBrainAndKb(params: {
     brainCount,
     kbCount,
     graphTriplesCount,
+    reranked,
     candidates: selectedCandidates
   };
 }

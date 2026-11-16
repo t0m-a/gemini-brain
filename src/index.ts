@@ -4,8 +4,10 @@
  *          with 4-Way Federated Recall across BrainMemoryDO + kb.tsimon.me (D1 + Vectorize).
  */
 
-import { McpServer } from "@modelcontextprotocol/server";
-import { createMcpHandler } from "agents/mcp/server";
+import {
+  McpServer,
+  WebStandardStreamableHTTPServerTransport
+} from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { BrainMemoryDO, type Env } from "./memory-do";
 import {
@@ -13,13 +15,14 @@ import {
   ingestKbArchiveBatch,
   type KbArchiveIngestItem
 } from "./federation";
+import { renderDashboardHtml } from "./dashboard";
 
 export { BrainMemoryDO, KbFederationService };
 
 function createBrainMcpServer(env: Env) {
   const server = new McpServer({
     name: "gemini-brain-mcp",
-    version: "1.1.0"
+    version: "1.4.0"
   });
 
   // Always route to the singleton Durable Object instance
@@ -44,7 +47,7 @@ function createBrainMcpServer(env: Env) {
         clientId: z
           .string()
           .optional()
-          .describe("Optional filter by clientId (e.g., 'rpi5-debian13-daemon', 'antigravity-win11-1', 'gemini-cli')"),
+          .describe("Optional filter by clientId (e.g., 'antigravity-win11-1', 'gemini-cli', 'gemini-web-architect')"),
         namespace: z
           .string()
           .optional()
@@ -158,7 +161,7 @@ function createBrainMcpServer(env: Env) {
         sessionId: z.string().describe("Active session identifier"),
         clientId: z
           .string()
-          .describe("Client identifier (e.g., 'antigravity-win11-1', 'gemini-cli', 'rpi5-daemon')"),
+          .describe("Client identifier (e.g., 'antigravity-win11-1', 'gemini-cli', 'gemini-web-architect')"),
         eventType: z
           .enum(["tool_call", "observation", "checkpoint", "error_resolution"])
           .describe("Type of episodic event"),
@@ -208,7 +211,7 @@ function createBrainMcpServer(env: Env) {
         clientId: z
           .string()
           .optional()
-          .describe("Client identifier for mutation audit tracking (e.g., 'antigravity-win11-1', 'rpi5-debian13-daemon')"),
+          .describe("Client identifier for mutation audit tracking (e.g., 'antigravity-win11-1', 'gemini-cli', 'gemini-web-architect')"),
         importance: z
           .number()
           .min(0)
@@ -255,12 +258,13 @@ function createBrainMcpServer(env: Env) {
     "brain://decisions/active",
     {
       title: "Active Architecture Decision Records (ADRs)",
-      description: "Active ADRs governing the global and project namespaces.",
+      description:
+        "Active ADRs governing all namespaces (global, tsimon.me, minkalab.net, homelab).",
       mimeType: "text/markdown"
     },
     async (uri) => {
       const stub = getBrainStub();
-      const markdown = await stub.getActiveDecisions("global");
+      const markdown = await stub.getActiveDecisions("all");
       return {
         contents: [
           {
@@ -280,12 +284,12 @@ function createBrainMcpServer(env: Env) {
     {
       title: "Brain Telemetry & Consolidation Status",
       description:
-        "Live counts of active memories, knowledge graph nodes/edges, unconsolidated episodic logs, and next nocturnal consolidation alarm.",
+        "Live counts and per-namespace breakdown of active memories, ADRs, knowledge graph nodes/edges, unconsolidated episodic logs, and next nocturnal consolidation alarm.",
       mimeType: "application/json"
     },
     async (uri) => {
       const stub = getBrainStub();
-      const stats = await stub.getNamespaceStats("global");
+      const stats = await stub.getNamespaceStats("all");
       return {
         contents: [
           {
@@ -363,7 +367,7 @@ function createBrainMcpServer(env: Env) {
     {
       title: "Hydrate Morning Coding Session with Overnight Changes",
       description:
-        "Pull the last 12-24 hours of memory mutations, RPi5 daemon syncs, and 03:00 AM consolidation digests to ground your first morning session.",
+        "Pull the last 12-24 hours of memory mutations, ADRs, and 03:00 AM consolidation digests to ground your first morning session.",
       argsSchema: z.object({
         hours: z
           .string()
@@ -384,7 +388,7 @@ function createBrainMcpServer(env: Env) {
             text:
               `Hydrate this morning's coding session with recent state changes from the Knowledge Brain.\n\n` +
               `1. Invoke \`get_overnight_diff\` with \`hours: ${Number(hours) || 12}\`${namespace ? ` and \`namespace: "${namespace}"\`` : ""}.\n` +
-              `2. Summarize the key overnight mutations, Raspberry Pi 5 daemon syncs, new ADRs, and any nocturnal consolidation digests.\n` +
+              `2. Summarize the key overnight mutations, new ADRs, and any nocturnal consolidation digests.\n` +
               `3. Highlight any modified facts or pending episodic events relevant to today's work.`
           }
         }
@@ -395,19 +399,618 @@ function createBrainMcpServer(env: Env) {
   return server;
 }
 
+function normalizeBearerToken(raw: string | null | undefined): string {
+  if (!raw) return "";
+  return raw
+    .trim()
+    .replace(/^MCP_BEARER_TOKEN\s*=\s*/i, "")
+    .replace(/^Bearer\s+/i, "")
+    .replace(/^["']+|["']+$/g, "")
+    .trim();
+}
+
+function toBase64Url(str: string): string {
+  return btoa(unescape(encodeURIComponent(str)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+function fromBase64Url(b64url: string): string {
+  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
+  return decodeURIComponent(escape(atob(b64 + pad)));
+}
+
+function base64UrlToUint8Array(b64url: string): Uint8Array {
+  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
+  const raw = atob(b64 + pad);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) {
+    out[i] = raw.charCodeAt(i);
+  }
+  return out;
+}
+
+function uint8ArrayToBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function hmacSign(payloadB64: string, secret: string): Promise<string> {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sigBuf = await crypto.subtle.sign("HMAC", key, enc.encode(payloadB64));
+  return uint8ArrayToBase64Url(new Uint8Array(sigBuf));
+}
+
+async function createSignedToken(
+  prefix: string,
+  payload: Record<string, unknown>,
+  secret: string
+): Promise<string> {
+  const payloadB64 = toBase64Url(JSON.stringify(payload));
+  const sig = await hmacSign(payloadB64, secret);
+  return `${prefix}.${payloadB64}.${sig}`;
+}
+
+async function verifySignedToken<T extends { exp?: number }>(
+  token: string,
+  expectedPrefix: string,
+  secret: string
+): Promise<T | null> {
+  if (!token || !secret || !token.startsWith(`${expectedPrefix}.`)) return null;
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const [, payloadB64, sig] = parts;
+  const expectedSig = await hmacSign(payloadB64, secret);
+  if (sig !== expectedSig) return null;
+  try {
+    const decoded = JSON.parse(fromBase64Url(payloadB64)) as T;
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (decoded.exp && decoded.exp < nowSec) return null;
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+async function verifyCloudflareOidcJwt(
+  token: string,
+  cfOidcBase: string,
+  expectedClientId: string
+): Promise<boolean> {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return false;
+    const header = JSON.parse(fromBase64Url(parts[0])) as { kid?: string; alg?: string };
+    const payload = JSON.parse(fromBase64Url(parts[1])) as {
+      iss?: string;
+      aud?: string | string[];
+      exp?: number;
+      client_id?: string;
+    };
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (payload.exp && payload.exp < nowSec) return false;
+    if (payload.iss && payload.iss !== cfOidcBase) return false;
+
+    const audMatch =
+      !payload.aud ||
+      (Array.isArray(payload.aud)
+        ? payload.aud.includes(expectedClientId)
+        : payload.aud === expectedClientId) ||
+      payload.client_id === expectedClientId;
+    if (!audMatch) return false;
+
+    const jwksRes = await fetch(`${cfOidcBase}/jwks`);
+    if (!jwksRes.ok) return false;
+    const jwks = (await jwksRes.json()) as {
+      keys?: Array<JsonWebKey & { kid?: string; alg?: string }>;
+    };
+    const keys = jwks.keys || [];
+    const matchingKey = header.kid
+      ? keys.find((k) => k.kid === header.kid)
+      : keys[0];
+    if (!matchingKey) return false;
+
+    const cryptoKey = await crypto.subtle.importKey(
+      "jwk",
+      matchingKey,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+    const data = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
+    const signature = base64UrlToUint8Array(parts[2]);
+    return await crypto.subtle.verify("RSASSA-PKCS1-v1_5", cryptoKey, signature, data);
+  } catch {
+    return false;
+  }
+}
+
+async function verifyCloudflareOidcToken(
+  token: string,
+  cfOidcBase: string,
+  expectedClientId: string
+): Promise<boolean> {
+  if (!token) return false;
+
+  const encoder = new TextEncoder();
+  const hashBuf = await crypto.subtle.digest("SHA-256", encoder.encode(token));
+  const tokenHash = Array.from(new Uint8Array(hashBuf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  const cacheKey = new Request(`https://auth-cache.internal/cf-oidc/${tokenHash}`);
+  const cache = caches.default;
+
+  const cached = await cache.match(cacheKey);
+  if (cached) return true;
+
+  // 1. Try local cryptographic RS256 verification against Cloudflare Access JWKS
+  const jwtValid = await verifyCloudflareOidcJwt(token, cfOidcBase, expectedClientId);
+  if (jwtValid) {
+    await cache.put(
+      cacheKey,
+      new Response("ok", { headers: { "Cache-Control": "max-age=300" } })
+    );
+    return true;
+  }
+
+  // 2. Fallback: Verify via Cloudflare OIDC userinfo endpoint
+  try {
+    const res = await fetch(`${cfOidcBase}/userinfo`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok) {
+      await cache.put(
+        cacheKey,
+        new Response("ok", { headers: { "Cache-Control": "max-age=300" } })
+      );
+      return true;
+    }
+  } catch {
+    // Ignore network errors and fail closed
+  }
+
+  return false;
+}
+
+const BRAIN_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#0b1120"/><circle cx="32" cy="32" r="18" fill="none" stroke="#06b6d4" stroke-width="4"/><circle cx="32" cy="32" r="7" fill="#10b981"/></svg>`;
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    const brainOrigin = `https://brain.${env.PRIMARY_DOMAIN || "tsimon.me"}`;
+    const oauthClientId =
+      env.OAUTH_CLIENT_ID ||
+      "9993bd9cb3166c06c0238a160c6e19c516b7e13a83feb285ae00878b74740662";
+    const oauthTeamDomain = (
+      env.OAUTH_TEAM_DOMAIN || "https://wandering-grass-64c7.cloudflareaccess.com"
+    ).replace(/\/+$/, "");
+    const cfOidcBase = `${oauthTeamDomain}/cdn-cgi/access/sso/oidc/${oauthClientId}`;
 
-    // Optional Bearer Token check alongside Cloudflare Zero Trust Access
-    if (env.MCP_BEARER_TOKEN) {
-      const auth = request.headers.get("Authorization");
-      if (auth !== `Bearer ${env.MCP_BEARER_TOKEN}`) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
-          status: 401,
-          headers: { "Content-Type": "application/json" }
-        });
+    const corsHeaders: Record<string, string> = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers":
+        "Authorization, Content-Type, Accept, Mcp-Session-Id, Mcp-Protocol-Version, X-Brain-Noc-Action, X-Brain-Token",
+      "Access-Control-Expose-Headers": "WWW-Authenticate, Mcp-Session-Id"
+    };
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders });
+    }
+
+    // 1. Browser static asset probes (prevent 401 responses from tripping Cloudflare WAF brute-force rules)
+    if (
+      request.method === "GET" &&
+      (url.pathname === "/favicon.ico" ||
+        url.pathname === "/favicon.svg" ||
+        url.pathname === "/apple-touch-icon.png")
+    ) {
+      return new Response(BRAIN_FAVICON_SVG, {
+        status: 200,
+        headers: {
+          "Content-Type": "image/svg+xml",
+          "Cache-Control": "public, max-age=86400"
+        }
+      });
+    }
+
+    if (request.method === "GET" && url.pathname === "/robots.txt") {
+      return new Response("User-agent: *\nDisallow: /\n", {
+        status: 200,
+        headers: { "Content-Type": "text/plain; charset=utf-8" }
+      });
+    }
+
+    // 1b. Public OAuth 2.0 / 2.1 Discovery & Proxy Endpoints (RFC 9728 + RFC 8414 + OIDC)
+    if (
+      url.pathname === "/.well-known/oauth-protected-resource" ||
+      url.pathname === "/.well-known/oauth-protected-resource/mcp" ||
+      url.pathname === "/mcp/.well-known/oauth-protected-resource"
+    ) {
+      return Response.json(
+        {
+          resource: `${brainOrigin}/mcp`,
+          authorization_servers: [brainOrigin],
+          bearer_methods_supported: ["header"],
+          scopes_supported: ["openid", "email", "profile", "groups"]
+        },
+        { status: 200, headers: corsHeaders }
+      );
+    }
+
+    if (
+      url.pathname === "/.well-known/oauth-authorization-server" ||
+      url.pathname === "/.well-known/oauth-authorization-server/mcp" ||
+      url.pathname === "/mcp/.well-known/oauth-authorization-server" ||
+      url.pathname === "/.well-known/openid-configuration" ||
+      url.pathname === "/.well-known/openid-configuration/mcp" ||
+      url.pathname === "/mcp/.well-known/openid-configuration"
+    ) {
+      return Response.json(
+        {
+          issuer: brainOrigin,
+          authorization_endpoint: `${brainOrigin}/authorize`,
+          token_endpoint: `${brainOrigin}/token`,
+          userinfo_endpoint: `${brainOrigin}/userinfo`,
+          jwks_uri: `${brainOrigin}/.well-known/jwks.json`,
+          registration_endpoint: `${brainOrigin}/register`,
+          scopes_supported: ["openid", "email", "profile", "groups"],
+          response_types_supported: ["code"],
+          response_modes_supported: ["query", "fragment", "form_post"],
+          grant_types_supported: ["authorization_code", "refresh_token"],
+          token_endpoint_auth_methods_supported: [
+            "client_secret_post",
+            "client_secret_basic",
+            "none"
+          ],
+          code_challenge_methods_supported: ["S256", "plain"],
+          id_token_signing_alg_values_supported: ["RS256"],
+          subject_types_supported: ["public"]
+        },
+        { status: 200, headers: corsHeaders }
+      );
+    }
+
+    if (
+      url.pathname === "/.well-known/jwks.json" ||
+      url.pathname === "/mcp/jwks.json"
+    ) {
+      const jwksRes = await fetch(`${cfOidcBase}/jwks`);
+      const jwksBody = await jwksRes.text();
+      return new Response(jwksBody, {
+        status: jwksRes.status,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+
+    if (
+      request.method === "POST" &&
+      (url.pathname === "/register" || url.pathname === "/mcp/register")
+    ) {
+      const regBody = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      return Response.json(
+        {
+          client_id: oauthClientId,
+          client_name: regBody.client_name || "mcp-oauth-client",
+          redirect_uris: regBody.redirect_uris || [`${brainOrigin}/callback`],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "client_secret_post"
+        },
+        { status: 201, headers: corsHeaders }
+      );
+    }
+
+    const expectedToken = normalizeBearerToken(env.MCP_BEARER_TOKEN);
+    const signingSecret = expectedToken || oauthClientId;
+
+    if (
+      request.method === "GET" &&
+      (url.pathname === "/authorize" || url.pathname === "/mcp/authorize")
+    ) {
+      const origRedirectUri = url.searchParams.get("redirect_uri") || "";
+      const origState = url.searchParams.get("state") || "";
+      const codeChallenge = url.searchParams.get("code_challenge") || "";
+      const codeChallengeMethod = url.searchParams.get("code_challenge_method") || "S256";
+      const callbackUri = `${brainOrigin}/callback`;
+      const nowSec = Math.floor(Date.now() / 1000);
+
+      const signedState = await createSignedToken(
+        "bstate",
+        {
+          r: origRedirectUri || callbackUri,
+          s: origState,
+          cc: codeChallenge,
+          ccm: codeChallengeMethod,
+          exp: nowSec + 900
+        },
+        signingSecret
+      );
+
+      const targetAuthUrl = new URL(`${cfOidcBase}/authorization`);
+      targetAuthUrl.searchParams.set("response_type", "code");
+      targetAuthUrl.searchParams.set("client_id", oauthClientId);
+      targetAuthUrl.searchParams.set("redirect_uri", callbackUri);
+      targetAuthUrl.searchParams.set("scope", "openid email profile");
+      targetAuthUrl.searchParams.set("state", signedState);
+
+      return Response.redirect(targetAuthUrl.toString(), 302);
+    }
+
+    if (
+      request.method === "GET" &&
+      (url.pathname === "/callback" || url.pathname === "/mcp/callback")
+    ) {
+      const rawState = url.searchParams.get("state") || "";
+      const cfCode = url.searchParams.get("code") || "";
+      const cfError = url.searchParams.get("error") || "";
+      const nowSec = Math.floor(Date.now() / 1000);
+
+      const decoded = await verifySignedToken<{
+        r?: string;
+        s?: string;
+        cc?: string;
+        ccm?: string;
+        exp?: number;
+      }>(rawState, "bstate", signingSecret);
+
+      if (decoded?.r) {
+        const clientCallback = new URL(decoded.r);
+        if (cfError || !cfCode) {
+          clientCallback.searchParams.set("error", cfError || "access_denied");
+          const errDesc = url.searchParams.get("error_description");
+          if (errDesc) clientCallback.searchParams.set("error_description", errDesc);
+        } else {
+          // Mint HMAC-signed authorization code proving Cloudflare Zero Trust authentication succeeded
+          const signedCode = await createSignedToken(
+            "bcode",
+            {
+              cf: cfCode,
+              cc: decoded.cc || "",
+              ccm: decoded.ccm || "S256",
+              exp: nowSec + 600
+            },
+            signingSecret
+          );
+          clientCallback.searchParams.set("code", signedCode);
+        }
+        if (decoded.s) {
+          clientCallback.searchParams.set("state", decoded.s);
+        }
+        return Response.redirect(clientCallback.toString(), 302);
       }
+
+      return Response.json(
+        {
+          ok: Boolean(cfCode && !cfError),
+          error: cfError || undefined,
+          error_description: url.searchParams.get("error_description") || undefined
+        },
+        { status: cfError ? 400 : 200, headers: corsHeaders }
+      );
+    }
+
+    if (
+      request.method === "POST" &&
+      (url.pathname === "/token" || url.pathname === "/mcp/token")
+    ) {
+      const contentType = request.headers.get("Content-Type") || "";
+      const rawBody = await request.text();
+      const params = new URLSearchParams(
+        contentType.includes("application/json")
+          ? (JSON.parse(rawBody || "{}") as Record<string, string>)
+          : rawBody
+      );
+
+      const grantType = params.get("grant_type") || "authorization_code";
+      const codeParam = params.get("code") || "";
+      const refreshParam = params.get("refresh_token") || "";
+      const codeVerifier = params.get("code_verifier") || "";
+      const nowSec = Math.floor(Date.now() / 1000);
+
+      // 1. Exchange HMAC-signed authorization code ('bcode.*') minted after Cloudflare Zero Trust login
+      if (grantType === "authorization_code" && codeParam.startsWith("bcode.")) {
+        const decodedCode = await verifySignedToken<{
+          cf: string;
+          cc?: string;
+          ccm?: string;
+          exp?: number;
+        }>(codeParam, "bcode", signingSecret);
+
+        if (!decodedCode) {
+          return Response.json(
+            { error: "invalid_grant", error_description: "Invalid or expired authorization code" },
+            { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+          );
+        }
+
+        // Verify PKCE code_verifier if a code_challenge was provided during /authorize and verifier is present
+        if (decodedCode.cc && codeVerifier) {
+          if (decodedCode.ccm === "S256") {
+            const hashBuf = await crypto.subtle.digest(
+              "SHA-256",
+              new TextEncoder().encode(codeVerifier)
+            );
+            const computedChallenge = uint8ArrayToBase64Url(new Uint8Array(hashBuf));
+            if (computedChallenge !== decodedCode.cc) {
+              return Response.json(
+                { error: "invalid_grant", error_description: "PKCE code_verifier mismatch" },
+                { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+              );
+            }
+          } else if (codeVerifier !== decodedCode.cc) {
+            return Response.json(
+              { error: "invalid_grant", error_description: "PKCE code_verifier mismatch" },
+              { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+            );
+          }
+        }
+
+        const accessToken = await createSignedToken(
+          "bat",
+          {
+            sub: "thomas-simon-primary-brain",
+            client_id: oauthClientId,
+            iat: nowSec,
+            exp: nowSec + 2592000 // 30 days
+          },
+          signingSecret
+        );
+        const refreshToken = await createSignedToken(
+          "brt",
+          {
+            sub: "thomas-simon-primary-brain",
+            client_id: oauthClientId,
+            iat: nowSec,
+            exp: nowSec + 31536000 // 365 days
+          },
+          signingSecret
+        );
+
+        return Response.json(
+          {
+            access_token: accessToken,
+            token_type: "Bearer",
+            expires_in: 2592000,
+            refresh_token: refreshToken,
+            scope: "openid email profile"
+          },
+          { status: 200, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+        );
+      }
+
+      // 2. Refresh token rotation ('brt.*')
+      if (grantType === "refresh_token" && refreshParam.startsWith("brt.")) {
+        const decodedRefresh = await verifySignedToken<{
+          sub: string;
+          client_id: string;
+          exp?: number;
+        }>(refreshParam, "brt", signingSecret);
+
+        if (!decodedRefresh) {
+          return Response.json(
+            { error: "invalid_grant", error_description: "Invalid or expired refresh token" },
+            { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+          );
+        }
+
+        const accessToken = await createSignedToken(
+          "bat",
+          {
+            sub: decodedRefresh.sub,
+            client_id: oauthClientId,
+            iat: nowSec,
+            exp: nowSec + 2592000
+          },
+          signingSecret
+        );
+        const newRefreshToken = await createSignedToken(
+          "brt",
+          {
+            sub: decodedRefresh.sub,
+            client_id: oauthClientId,
+            iat: nowSec,
+            exp: nowSec + 31536000
+          },
+          signingSecret
+        );
+
+        return Response.json(
+          {
+            access_token: accessToken,
+            token_type: "Bearer",
+            expires_in: 2592000,
+            refresh_token: newRefreshToken,
+            scope: "openid email profile"
+          },
+          { status: 200, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+        );
+      }
+
+      // 3. Fallback: Direct upstream Cloudflare Access OIDC token exchange (with redirect: "manual")
+      const forwardHeaders: Record<string, string> = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json"
+      };
+      const authHeader = request.headers.get("Authorization");
+      if (authHeader) {
+        forwardHeaders["Authorization"] = authHeader;
+      } else if (!params.get("client_id")) {
+        params.set("client_id", oauthClientId);
+      }
+
+      const tokenRes = await fetch(`${cfOidcBase}/token`, {
+        method: "POST",
+        headers: forwardHeaders,
+        body: params.toString(),
+        redirect: "manual"
+      });
+
+      if (tokenRes.status >= 300 && tokenRes.status < 400) {
+        const loc = tokenRes.headers.get("Location") || "";
+        const locUrl = new URL(loc, brainOrigin);
+        return Response.json(
+          {
+            error: locUrl.searchParams.get("error") || "invalid_grant",
+            error_description:
+              locUrl.searchParams.get("error_description") ||
+              "Upstream Cloudflare Access token exchange failed"
+          },
+          { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+        );
+      }
+
+      const tokenBody = await tokenRes.text();
+      return new Response(tokenBody, {
+        status: tokenRes.status,
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+          ...corsHeaders
+        }
+      });
+    }
+
+    if (url.pathname === "/userinfo" || url.pathname === "/mcp/userinfo") {
+      const provided = normalizeBearerToken(request.headers.get("Authorization"));
+      const signedTokenValid = await verifySignedToken(provided, "bat", signingSecret);
+      if (signedTokenValid || (expectedToken && provided === expectedToken)) {
+        return Response.json(
+          {
+            sub: "thomas-simon-primary-brain",
+            name: "Thomas Mathieu Simon",
+            email: "thomas@tsimon.me",
+            email_verified: true
+          },
+          { status: 200, headers: corsHeaders }
+        );
+      }
+      const userRes = await fetch(`${cfOidcBase}/userinfo`, {
+        method: request.method,
+        headers: {
+          Authorization: request.headers.get("Authorization") || "",
+          Accept: "application/json"
+        }
+      });
+      const userBody = await userRes.text();
+      return new Response(userBody, {
+        status: userRes.status,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
     }
 
     // SEP-2127 Static Discovery Card for zero-connection MCP capability inspection
@@ -416,21 +1019,49 @@ export default {
       url.pathname === "/.well-known/ai-catalog.json" ||
       url.pathname === "/.well-known/mcp/server-card.json"
     ) {
-      return Response.json({
-        name: "gemini-brain-mcp",
-        version: "1.2.0",
-        endpoint: `https://brain.${env.PRIMARY_DOMAIN}/mcp`,
-        federated_sources: [
-          "brain.tsimon.me (BrainMemoryDO + gemini-brain-bge-m3 1024-dim + RPi5 Qdrant)",
-          "kb.tsimon.me (D1 archive-knowledge-db + archive-kb-index 768-dim)"
-        ],
-        tools: [
-          "get_overnight_diff",
-          "hybrid_recall",
-          "log_decision",
-          "log_episodic_event",
-          "remember_fact"
-        ]
+      return Response.json(
+        {
+          name: "gemini-brain-mcp",
+          version: "1.4.0",
+          endpoint: `${brainOrigin}/mcp`,
+          dashboard: `${brainOrigin}/mcp?ui=1`,
+          oauth_metadata: `${brainOrigin}/.well-known/oauth-authorization-server`,
+          federated_sources: [
+            "brain.tsimon.me (BrainMemoryDO + gemini-brain-bge-m3 1024-dim + bge-reranker-base)",
+            "kb.tsimon.me (D1 archive-knowledge-db + archive-kb-index 768-dim)"
+          ],
+          tools: [
+            "get_overnight_diff",
+            "hybrid_recall",
+            "log_decision",
+            "log_episodic_event",
+            "remember_fact"
+          ]
+        },
+        { status: 200, headers: corsHeaders }
+      );
+    }
+
+    // 2. Public Browser Session Auth UI Shell (Option A: Zero secrets embedded in HTML)
+    // Served on /dashboard, /ui, /, and GET /mcp (when visited in a web browser via Accept: text/html)
+    // so that path-scoped Cloudflare WAF rules on /mcp also allow loading the UI shell.
+    const acceptHeader = (request.headers.get("Accept") || "").toLowerCase();
+    const isBrowserHtmlGet =
+      request.method === "GET" &&
+      (url.pathname === "/dashboard" ||
+        url.pathname === "/ui" ||
+        url.pathname === "/" ||
+        (url.pathname === "/mcp" &&
+          (acceptHeader.includes("text/html") || url.searchParams.has("ui"))));
+
+    if (isBrowserHtmlGet) {
+      return new Response(renderDashboardHtml(env.PRIMARY_DOMAIN || "tsimon.me"), {
+        status: 200,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+          ...corsHeaders
+        }
       });
     }
 
@@ -438,6 +1069,150 @@ export default {
       const id = env.BRAIN_DO.idFromName("thomas-simon-primary-brain");
       return env.BRAIN_DO.get(id);
     };
+
+    // 3. Browser Cognitive NOC Action Multiplexer (POST /mcp?noc=1 or POST /dashboard)
+    // Uses POST /mcp (the WAF-whitelisted MCP endpoint) and returns HTTP 200 on auth mismatch
+    // so Cloudflare WAF / Rate-Limiting never locks out the user's browser IP with HTTP 403.
+    const nocActionHeader = request.headers.get("X-Brain-Noc-Action");
+    if (
+      request.method === "POST" &&
+      (nocActionHeader ||
+        url.searchParams.has("noc") ||
+        url.pathname === "/dashboard" ||
+        url.pathname === "/ui")
+    ) {
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const action = String(nocActionHeader || body.nocAction || url.searchParams.get("noc") || "dashboard");
+      const providedToken = normalizeBearerToken(
+        request.headers.get("Authorization") ||
+          request.headers.get("X-Brain-Token") ||
+          (typeof body._token === "string" ? body._token : "")
+      );
+
+      if (expectedToken && providedToken !== expectedToken) {
+        return Response.json(
+          {
+            ok: false,
+            authError:
+              "Invalid MCP_BEARER_TOKEN. Make sure you pasted the 64-character token value from .dev.vars."
+          },
+          { status: 200, headers: corsHeaders }
+        );
+      }
+
+      const stub = getBrainStub();
+      if (action === "dashboard") {
+        const snapshot = await stub.getDashboardSnapshot({
+          namespace: typeof body.namespace === "string" ? body.namespace : undefined,
+          memoryType: typeof body.memoryType === "string" ? body.memoryType : undefined,
+          search: typeof body.search === "string" ? body.search : undefined,
+          limit: typeof body.limit === "number" ? body.limit : 250
+        });
+        return Response.json({ ok: true, ...snapshot }, { status: 200, headers: corsHeaders });
+      }
+
+      if (action === "recall") {
+        const query = String(body.query || "").trim();
+        if (!query) {
+          return Response.json({ ok: false, error: "Missing 'query'" }, { status: 200, headers: corsHeaders });
+        }
+        const recallRes = await stub.hybridRecall({
+          query,
+          namespace: typeof body.namespace === "string" ? body.namespace : undefined,
+          tokenBudget: typeof body.tokenBudget === "number" ? body.tokenBudget : 2000
+        });
+        return Response.json({ ok: true, ...recallRes }, { status: 200, headers: corsHeaders });
+      }
+
+      if (action === "consolidate") {
+        const consRes = await stub.runConsolidationNow(
+          typeof body.triggerSource === "string" ? body.triggerSource : "dashboard_noc"
+        );
+        return Response.json({ ok: true, ...consRes }, { status: 200, headers: corsHeaders });
+      }
+
+      if (action === "reindex") {
+        const reidxRes = await stub.reindexMemories({
+          rebuildFts: body.rebuildFts !== false,
+          hours: typeof body.hours === "number" ? body.hours : 720,
+          limit: typeof body.limit === "number" ? body.limit : 50
+        });
+        return Response.json({ ...reidxRes }, { status: 200, headers: corsHeaders });
+      }
+
+      if (action === "rollback") {
+        const rbRes = await stub.rollbackMutation({
+          mutationId: typeof body.mutationId === "number" ? body.mutationId : undefined,
+          memoryId: typeof body.memoryId === "string" ? body.memoryId : undefined,
+          clientId: typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
+        });
+        return Response.json(rbRes, { status: 200, headers: corsHeaders });
+      }
+    }
+
+    // 4. Dual-Mode Auth Gate: Fast-Path PSK (gemini-cli / Antigravity) + Signed Brain OAuth + Cloudflare OIDC
+    if (expectedToken) {
+      const provided = normalizeBearerToken(
+        request.headers.get("Authorization") || request.headers.get("X-Brain-Token")
+      );
+      const isPskValid = provided === expectedToken;
+      const isSignedOAuthValid =
+        !isPskValid &&
+        Boolean(provided) &&
+        Boolean(await verifySignedToken(provided, "bat", signingSecret));
+      const isOidcValid =
+        !isPskValid &&
+        !isSignedOAuthValid &&
+        Boolean(provided) &&
+        (await verifyCloudflareOidcToken(provided, cfOidcBase, oauthClientId));
+
+      if (!isPskValid && !isSignedOAuthValid && !isOidcValid) {
+        return new Response(
+          JSON.stringify({
+            error: "Unauthorized",
+            error_description: "Bearer token or OAuth 2.0 credentials required"
+          }),
+          {
+            status: 401,
+            headers: {
+              "Content-Type": "application/json",
+              "WWW-Authenticate": `Bearer error="invalid_token", resource_metadata="${brainOrigin}/.well-known/oauth-protected-resource", as_uri="${brainOrigin}/.well-known/oauth-authorization-server"`,
+              ...corsHeaders
+            }
+          }
+        );
+      }
+    }
+
+    // Authenticated Cognitive NOC Dashboard Snapshot & 4-Way Recall Routes
+    if (url.pathname === "/audit/dashboard") {
+      const params =
+        request.method === "POST"
+          ? ((await request.json().catch(() => ({}))) as Parameters<
+              BrainMemoryDO["getDashboardSnapshot"]
+            >[0])
+          : {
+              namespace: url.searchParams.get("namespace") ?? undefined,
+              memoryType: url.searchParams.get("memoryType") ?? undefined,
+              search: url.searchParams.get("search") ?? undefined,
+              limit: url.searchParams.get("limit")
+                ? Number(url.searchParams.get("limit"))
+                : undefined
+            };
+      const result = await getBrainStub().getDashboardSnapshot(params);
+      return Response.json(result);
+    }
+
+    if (request.method === "POST" && url.pathname === "/audit/recall") {
+      const body = (await request.json().catch(() => ({}))) as Parameters<
+        BrainMemoryDO["hybridRecall"]
+      >[0];
+      if (!body.query || !body.query.trim()) {
+        return Response.json({ error: "Missing required 'query' parameter" }, { status: 400 });
+      }
+      const result = await getBrainStub().hybridRecall(body);
+      return Response.json(result);
+    }
 
     // Authenticated Terminal Audit & Control Routes (/audit/*)
     if (url.pathname === "/audit/diff") {
@@ -528,6 +1303,113 @@ export default {
       return Response.json(result);
     }
 
-    return createMcpHandler(() => createBrainMcpServer(env))(request, env, ctx);
+    if (request.method === "DELETE" && url.pathname === "/mcp") {
+      return new Response(null, { status: 200, headers: corsHeaders });
+    }
+
+    if (request.method === "GET" && url.pathname === "/mcp") {
+      return Response.json(
+        {
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "Method not allowed." },
+          id: null
+        },
+        {
+          status: 405,
+          headers: { Allow: "POST, DELETE, OPTIONS", ...corsHeaders }
+        }
+      );
+    }
+
+    // Handle POST /mcp via direct stateless JSON-mode Streamable HTTP transport
+    // (avoids 403 Origin blocks on gemini.google.com, 406 Accept errors, and hanging SSE keep-alive streams)
+    const rawMcpBody = await request.text();
+    let parsedMcpBody: unknown;
+    try {
+      parsedMcpBody = rawMcpBody ? JSON.parse(rawMcpBody) : undefined;
+    } catch {
+      return Response.json(
+        {
+          jsonrpc: "2.0",
+          error: { code: -32700, message: "Parse error: Invalid JSON" },
+          id: null
+        },
+        { status: 400, headers: corsHeaders }
+      );
+    }
+
+    const normalizedHeaders = new Headers(request.headers);
+    normalizedHeaders.set("Accept", "application/json, text/event-stream");
+    normalizedHeaders.set("Content-Type", "application/json");
+    normalizedHeaders.delete("Origin");
+    normalizedHeaders.delete("mcp-protocol-version");
+
+    const normalizedReq = new Request(request.url, {
+      method: request.method,
+      headers: normalizedHeaders
+    });
+
+    const server = createBrainMcpServer(env);
+    const transport = new WebStandardStreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true
+    });
+
+    await server.connect(transport);
+    let mcpResponse: Response;
+    try {
+      mcpResponse = await transport.handleRequest(normalizedReq, {
+        parsedBody: parsedMcpBody
+      });
+    } finally {
+      ctx.waitUntil(
+        Promise.allSettled([transport.close(), server.close()])
+      );
+    }
+
+    const respHeaders = new Headers(mcpResponse.headers);
+    for (const [k, v] of Object.entries(corsHeaders)) {
+      respHeaders.set(k, v);
+    }
+    const sessionId =
+      request.headers.get("Mcp-Session-Id") ||
+      request.headers.get("mcp-session-id") ||
+      "brain-stateless-session";
+    respHeaders.set("Mcp-Session-Id", sessionId);
+
+    // Log OAuth-authenticated MCP calls asynchronously for live observability
+    const providedToken = normalizeBearerToken(
+      request.headers.get("Authorization") || request.headers.get("X-Brain-Token")
+    );
+    if (providedToken && providedToken !== expectedToken) {
+      const rpcMethod =
+        typeof parsedMcpBody === "object" &&
+        parsedMcpBody !== null &&
+        "method" in parsedMcpBody
+          ? String((parsedMcpBody as { method?: unknown }).method)
+          : "batch";
+      ctx.waitUntil(
+        getBrainStub()
+          .logEpisodicEvent({
+            sessionId,
+            clientId: "gemini-web-oauth",
+            eventType: "tool_call",
+            payload: JSON.stringify({
+              rpcMethod,
+              status: mcpResponse.status,
+              ua: request.headers.get("User-Agent") || "",
+              accept: request.headers.get("Accept") || "",
+              origin: request.headers.get("Origin") || ""
+            })
+          })
+          .catch(() => {})
+      );
+    }
+
+    return new Response(mcpResponse.body, {
+      status: mcpResponse.status,
+      statusText: mcpResponse.statusText,
+      headers: respHeaders
+    });
   }
 } satisfies ExportedHandler<Env>;

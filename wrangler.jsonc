@@ -49,6 +49,8 @@
     "PRIMARY_DOMAIN": "tsimon.me",
     "EMBEDDING_MODEL": "@cf/baai/bge-m3",
     "KB_EMBEDDING_MODEL": "@cf/baai/bge-base-en-v1.5",
-    "RERANKER_MODEL": "@cf/baai/bge-reranker-base"
+    "RERANKER_MODEL": "@cf/baai/bge-reranker-base",
+    "OAUTH_CLIENT_ID": "9993bd9cb3166c06c0238a160c6e19c516b7e13a83feb285ae00878b74740662",
+    "OAUTH_TEAM_DOMAIN": "https://wandering-grass-64c7.cloudflareaccess.com"
   }
 }

@@ -75,7 +75,7 @@ class C:
 
 
 # =============================================================================
-# CREDENTIAL DISCOVERY (ENV -> .dev.vars -> RPi5 /etc/gemini-brain/watcher.env)
+# CREDENTIAL DISCOVERY (ENV -> .dev.vars)
 # =============================================================================
 def load_bearer_token() -> str:
     token = os.environ.get("MCP_BEARER_TOKEN", "").strip()
@@ -87,10 +87,13 @@ def load_bearer_token() -> str:
         script_dir / ".dev.vars",
         Path.cwd() / ".dev.vars",
         script_dir.parent / ".dev.vars",
-        Path("/etc/gemini-brain/watcher.env"),
-        Path.home() / ".config" / "gemini-brain" / "watcher.env",
         Path.home() / ".gemini-brain.env",
     ]
+    if platform.system() != "Windows":
+        candidate_files.extend([
+            Path("/etc/gemini-brain/watcher.env"),
+            Path.home() / ".config" / "gemini-brain" / "watcher.env",
+        ])
 
     for env_file in candidate_files:
         try:

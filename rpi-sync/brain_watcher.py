@@ -21,13 +21,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import httpx
-from watchdog.events import FileSystemEvent, FileSystemEventHandler
-from watchdog.observers import Observer
+try:
+    import httpx
+    from watchdog.events import FileSystemEvent, FileSystemEventHandler
+    from watchdog.observers import Observer
+except ImportError:
+    httpx = None  # type: ignore[assignment]
+    FileSystemEvent = Any  # type: ignore[misc,assignment]
+    FileSystemEventHandler = object  # type: ignore[misc,assignment]
+    Observer = None  # type: ignore[assignment]
 
 # =============================================================================
 # CONFIGURATION BLOCK (ENVIRONMENT VARIABLES)
 # =============================================================================
+RPI_SYNC_ENABLED: bool = os.environ.get("RPI_SYNC_ENABLED", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 BRAIN_MCP_URL: str = os.environ.get("BRAIN_MCP_URL", "https://brain.tsimon.me/mcp")
 MCP_BEARER_TOKEN: str = os.environ.get("MCP_BEARER_TOKEN", "")
 WATCH_DIRS_RAW: str = os.environ.get(
@@ -614,6 +625,12 @@ class BrainSyncHandler(FileSystemEventHandler):
 
 
 def main() -> None:
+    if not RPI_SYNC_ENABLED:
+        logger.info(
+            "Raspberry Pi 5 sync & Qdrant federation is disabled (RPI_SYNC_ENABLED=false). Exiting cleanly."
+        )
+        return
+
     state_db = LocalSyncStateDB(STATE_DB_PATH)
     mcp = BrainMcpClient(BRAIN_MCP_URL, MCP_BEARER_TOKEN)
     qdrant_key, qdrant_collection = _load_qdrant_credentials()
