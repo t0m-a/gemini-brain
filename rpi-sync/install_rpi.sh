@@ -15,6 +15,7 @@ python3 -m venv .venv
 if [ ! -f "${ENV_FILE}" ]; then
   echo "=== [2/4] Creating ${ENV_FILE} template ==="
   sudo tee "${ENV_FILE}" > /dev/null << 'EOF'
+RPI_SYNC_ENABLED=true
 BRAIN_MCP_URL=https://brain.tsimon.me/mcp
 MCP_BEARER_TOKEN=REPLACE_WITH_MCP_BEARER_TOKEN
 WATCH_DIRS=/opt/edge-rag-hub,/opt/gemini-brain

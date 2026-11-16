@@ -3,7 +3,7 @@
  * Purpose: Self-contained Cognitive NOC Web Visualization Dashboard for brain.tsimon.me
  *          Implements Option A (Browser Session Auth with zero embedded secrets) and 5 interactive visual modules:
  *          1. Interactive 2D Force-Directed Knowledge Graph Canvas (PageRank sizing + Edge Inspector)
- *          2. Connected Surfaces & Storage Databases Topology Matrix (including RPi5 Offline/Preserved state)
+ *          2. Connected Surfaces & Storage Databases Topology Matrix (including RPi5 Edge Sync & Knowledge Graph)
  *          3. Memory Types Status & Content Explorer by Namespace (semantic, procedural, episodic_summary, ADRs)
  *          4. 4-Way Federated RRF Search Playground & Score Inspector
  *          5. Nocturnal 03:00 AM Sleep Cycle, Episodic Queue & Before/After Mutation Diff Viewer with 1-Click Rollback
@@ -855,7 +855,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
         <div class="panel">
           <div class="panel-header">
             <div class="panel-title">🖥️ Connected Client Surfaces</div>
-            <span class="badge badge-cyan" id="surfaces-count-badge">4 Surfaces</span>
+            <span class="badge badge-cyan" id="surfaces-count-badge">5 Surfaces</span>
           </div>
           <div class="panel-body" id="surfaces-container">
             <div style="color: var(--text-2); font-size: 12px;">Loading surface telemetry...</div>
@@ -1367,11 +1367,13 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
         {
           name: "🍓 Raspberry Pi 5 Home Lab (node:rpi5)",
           clientId: "rpi5-watcher / qdrant",
-          badge: "badge-amber",
-          status: "OFFLINE • GRAPH PRESERVED",
-          desc: "RPI_SYNC_ENABLED=false while hardware is offline. " +
+          badge: rpiPreserved.rpiSyncEnabled === false ? "badge-amber" : "badge-emerald",
+          status: rpiPreserved.rpiSyncEnabled === false ? "OFFLINE • GRAPH PRESERVED" : "CONNECTED • ACTIVE (EDGE SYNC)",
+          desc: (rpiPreserved.rpiSyncEnabled === false
+            ? "RPI_SYNC_ENABLED=false while hardware is offline. "
+            : "RPI_SYNC_ENABLED=true • Debian 13 AST/Markdown watcher & Qdrant federation online. ") +
                 rpiPreserved.preservedEntities + " RPi5/Qdrant entities & " +
-                rpiPreserved.preservedActiveEdges + " active edges preserved (valid_until = NULL).",
+                rpiPreserved.preservedActiveEdges + " active edges linked (valid_until = NULL).",
           muts: rpiStats.muts,
           epis: rpiStats.epis,
           lastTs: rpiStats.lastTs

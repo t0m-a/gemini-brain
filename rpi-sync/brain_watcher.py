@@ -34,7 +34,7 @@ except ImportError:
 # =============================================================================
 # CONFIGURATION BLOCK (ENVIRONMENT VARIABLES)
 # =============================================================================
-RPI_SYNC_ENABLED: bool = os.environ.get("RPI_SYNC_ENABLED", "false").strip().lower() in (
+RPI_SYNC_ENABLED: bool = os.environ.get("RPI_SYNC_ENABLED", "true").strip().lower() in (
     "1",
     "true",
     "yes",

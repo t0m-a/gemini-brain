@@ -2055,8 +2055,8 @@ export class BrainMemoryDO extends DurableObject<Env> {
         mutationClients,
         episodicClients,
         rpi5Preserved: {
-          rpiSyncEnabled: false,
-          hardwareStatus: "OFFLINE_GRAPH_PRESERVED",
+          rpiSyncEnabled: true,
+          hardwareStatus: "ONLINE_ACTIVE",
           preservedEntities: rpi5GraphStats.entities_count,
           preservedActiveEdges: rpi5GraphStats.edges_count
         }
@@ -2103,9 +2103,9 @@ export class BrainMemoryDO extends DurableObject<Env> {
           name: "service:rpi5-qdrant-knowledge-hub",
           engine: "Raspberry Pi 5 Qdrant + AST Watcher",
           role: "Tier-3 Local Edge Vault (node:rpi5)",
-          status: "OFFLINE_PRESERVED",
+          status: "ONLINE_FEDERATED",
           records: rpi5GraphStats.entities_count + rpi5GraphStats.edges_count,
-          details: `RPI_SYNC_ENABLED=false • ${rpi5GraphStats.entities_count} Graph Nodes & ${rpi5GraphStats.edges_count} Active Edges Preserved (valid_until = NULL)`
+          details: `RPI_SYNC_ENABLED=true • ${rpi5GraphStats.entities_count} Graph Nodes & ${rpi5GraphStats.edges_count} Active Edges Linked (valid_until = NULL)`
         }
       ],
       sleepCycle: {
