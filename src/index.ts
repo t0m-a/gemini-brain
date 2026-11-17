@@ -252,6 +252,82 @@ function createBrainMcpServer(env: Env) {
     }
   );
 
+  // Tool 6 (Alphabetical Order #6): resolve_conflict
+  server.registerTool(
+    "resolve_conflict",
+    {
+      description:
+        "Manage Active Memory Governance & Semantic Contradiction Triage: resolve a flagged memory conflict ('keep', 'supersede', or 'merge'), list pending conflicts ('list'), or trigger an immediate contradiction audit ('audit').",
+      inputSchema: z.object({
+        action: z
+          .enum(["keep", "supersede", "merge", "list", "audit"])
+          .describe("Triage decision ('keep', 'supersede', 'merge') or query action ('list', 'audit')"),
+        conflictId: z
+          .number()
+          .int()
+          .optional()
+          .describe("Conflict ID from memory_conflicts table (required when action is 'keep', 'supersede', or 'merge')"),
+        mergedContent: z
+          .string()
+          .optional()
+          .describe("Optional synthesized Markdown content when action is 'merge'"),
+        namespace: z
+          .string()
+          .optional()
+          .describe("Optional namespace filter when listing or auditing conflicts"),
+        clientId: z
+          .string()
+          .optional()
+          .describe("Client identifier recording the resolution (default: 'mcp-governance-triage')")
+      })
+    },
+    async (args) => {
+      const stub = getBrainStub();
+      if (args.action === "list") {
+        const listRes = await stub.getMemoryConflicts({
+          status: "pending",
+          namespace: args.namespace
+        });
+        return {
+          content: [{ type: "text", text: JSON.stringify(listRes, null, 2) }]
+        };
+      }
+      if (args.action === "audit") {
+        const auditRes = await stub.auditContradictionsNow({
+          namespace: args.namespace,
+          hours: 24,
+          limit: 5
+        });
+        return {
+          content: [{ type: "text", text: JSON.stringify(auditRes, null, 2) }]
+        };
+      }
+      if (!args.conflictId) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                { ok: false, error: "conflictId is required for keep / supersede / merge" },
+                null,
+                2
+              )
+            }
+          ]
+        };
+      }
+      const res = await stub.resolveMemoryConflict({
+        conflictId: args.conflictId,
+        action: args.action,
+        mergedContent: args.mergedContent,
+        clientId: args.clientId || "mcp-governance-triage"
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(res, null, 2) }]
+      };
+    }
+  );
+
   // Resource 1: brain://decisions/active
   server.registerResource(
     "active-decisions",
@@ -389,7 +465,7 @@ function createBrainMcpServer(env: Env) {
               `Hydrate this morning's coding session with recent state changes from the Knowledge Brain.\n\n` +
               `1. Invoke \`get_overnight_diff\` with \`hours: ${Number(hours) || 12}\`${namespace ? ` and \`namespace: "${namespace}"\`` : ""}.\n` +
               `2. Summarize the key overnight mutations, new ADRs, and any nocturnal consolidation digests.\n` +
-              `3. Highlight any modified facts or pending episodic events relevant to today's work.`
+              `3. If any pending semantic contradictions are listed under \`Pending Semantic Contradictions\`, present each conflict clearly and ask me for a 15-second \`keep\` / \`supersede\` / \`merge\` decision using \`resolve_conflict\`.`
           }
         }
       ]
@@ -1022,7 +1098,7 @@ export default {
       return Response.json(
         {
           name: "gemini-brain-mcp",
-          version: "1.4.0",
+          version: "1.5.0",
           endpoint: `${brainOrigin}/mcp`,
           dashboard: `${brainOrigin}/mcp?ui=1`,
           oauth_metadata: `${brainOrigin}/.well-known/oauth-authorization-server`,
@@ -1035,7 +1111,8 @@ export default {
             "hybrid_recall",
             "log_decision",
             "log_episodic_event",
-            "remember_fact"
+            "remember_fact",
+            "resolve_conflict"
           ]
         },
         { status: 200, headers: corsHeaders }
@@ -1046,13 +1123,19 @@ export default {
     // Served on /dashboard, /ui, /, and GET /mcp (when visited in a web browser via Accept: text/html)
     // so that path-scoped Cloudflare WAF rules on /mcp also allow loading the UI shell.
     const acceptHeader = (request.headers.get("Accept") || "").toLowerCase();
+    const secFetchDest = (request.headers.get("Sec-Fetch-Dest") || "").toLowerCase();
+    const secFetchMode = (request.headers.get("Sec-Fetch-Mode") || "").toLowerCase();
     const isBrowserHtmlGet =
       request.method === "GET" &&
       (url.pathname === "/dashboard" ||
         url.pathname === "/ui" ||
         url.pathname === "/" ||
         (url.pathname === "/mcp" &&
-          (acceptHeader.includes("text/html") || url.searchParams.has("ui"))));
+          (acceptHeader.includes("text/html") ||
+            secFetchDest === "document" ||
+            secFetchMode === "navigate" ||
+            url.searchParams.has("ui") ||
+            url.searchParams.has("reset"))));
 
     if (isBrowserHtmlGet) {
       return new Response(renderDashboardHtml(env.PRIMARY_DOMAIN || "tsimon.me"), {
@@ -1147,6 +1230,41 @@ export default {
           clientId: typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
         });
         return Response.json(rbRes, { status: 200, headers: corsHeaders });
+      }
+
+      if (action === "conflicts") {
+        const confRes = await stub.getMemoryConflicts({
+          status:
+            body.status === "pending" || body.status === "resolved" ? body.status : "all",
+          namespace: typeof body.namespace === "string" ? body.namespace : undefined,
+          limit: typeof body.limit === "number" ? body.limit : 50
+        });
+        return Response.json({ ok: true, ...confRes }, { status: 200, headers: corsHeaders });
+      }
+
+      if (action === "audit_conflicts") {
+        const auditRes = await stub.auditContradictionsNow({
+          memoryId: typeof body.memoryId === "string" ? body.memoryId : undefined,
+          hours: typeof body.hours === "number" ? body.hours : 24,
+          namespace: typeof body.namespace === "string" ? body.namespace : undefined,
+          limit: typeof body.limit === "number" ? body.limit : 5
+        });
+        return Response.json(auditRes, { status: 200, headers: corsHeaders });
+      }
+
+      if (action === "resolve_conflict") {
+        const resAction =
+          body.action === "keep" || body.action === "supersede" || body.action === "merge"
+            ? body.action
+            : "supersede";
+        const resolveRes = await stub.resolveMemoryConflict({
+          conflictId: Number(body.conflictId),
+          action: resAction,
+          mergedContent: typeof body.mergedContent === "string" ? body.mergedContent : undefined,
+          clientId:
+            typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
+        });
+        return Response.json(resolveRes, { status: 200, headers: corsHeaders });
       }
     }
 
@@ -1286,6 +1404,48 @@ export default {
         body.triggerSource || "manual_cli"
       );
       return Response.json(result);
+    }
+
+    if (url.pathname === "/audit/conflicts") {
+      if (request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as {
+          auditNow?: boolean;
+          status?: "pending" | "resolved" | "all";
+          namespace?: string;
+          memoryId?: string;
+          hours?: number;
+          limit?: number;
+        };
+        if (body.auditNow) {
+          const auditResult = await getBrainStub().auditContradictionsNow({
+            memoryId: body.memoryId,
+            hours: body.hours ?? 24,
+            namespace: body.namespace,
+            limit: body.limit ?? 5
+          });
+          return Response.json(auditResult);
+        }
+        const listResult = await getBrainStub().getMemoryConflicts({
+          status: body.status ?? "all",
+          namespace: body.namespace,
+          limit: body.limit ?? 50
+        });
+        return Response.json({ ok: true, ...listResult });
+      }
+      const listResult = await getBrainStub().getMemoryConflicts({
+        status: (url.searchParams.get("status") as "pending" | "resolved" | "all") || "all",
+        namespace: url.searchParams.get("namespace") ?? undefined,
+        limit: url.searchParams.get("limit") ? Number(url.searchParams.get("limit")) : 50
+      });
+      return Response.json({ ok: true, ...listResult });
+    }
+
+    if (request.method === "POST" && url.pathname === "/audit/resolve-conflict") {
+      const body = (await request.json().catch(() => ({}))) as Parameters<
+        BrainMemoryDO["resolveMemoryConflict"]
+      >[0];
+      const result = await getBrainStub().resolveMemoryConflict(body);
+      return Response.json(result, { status: result.ok ? 200 : 400 });
     }
 
     // Authenticated High-Throughput Batch Ingestion Routes (Tier 1 Brain + Tier 2 KB Archive)

@@ -157,6 +157,35 @@ CREATE TABLE IF NOT EXISTS consolidation_runs (
 
 CREATE INDEX IF NOT EXISTS idx_consolidation_runs_created
     ON consolidation_runs(created_at DESC);
+
+-- 9. Semantic Contradiction Triage Queue (Active Memory Governance & Repo Drift Watchdog)
+CREATE TABLE IF NOT EXISTS memory_conflicts (
+    conflict_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER,                           -- Nocturnal consolidation_runs.run_id (if detected during sleep cycle)
+    namespace TEXT NOT NULL DEFAULT 'global',
+    conflict_type TEXT NOT NULL DEFAULT 'semantic_contradiction', -- 'semantic_contradiction' | 'triple_conflict' | 'adr_drift'
+    severity TEXT NOT NULL DEFAULT 'medium',  -- 'low' | 'medium' | 'high'
+    existing_memory_id TEXT,                  -- Older active memory ID in conflict
+    existing_title TEXT,
+    existing_snippet TEXT,
+    existing_edge_id TEXT,                    -- Optional older KG edge ID (source|relation|target)
+    existing_decision_id TEXT,                -- Optional older ADR decision_id
+    new_memory_id TEXT,                       -- Newly consolidated digest or newly ingested memory ID
+    new_title TEXT,
+    new_snippet TEXT,
+    new_edge_id TEXT,                         -- Optional newer KG edge ID
+    reason TEXT NOT NULL,                     -- LLM or structural explanation of the contradiction
+    suggested_action TEXT NOT NULL DEFAULT 'supersede', -- 'keep' | 'supersede' | 'merge'
+    merged_content_proposal TEXT,             -- Pre-synthesized merged text if suggested_action = 'merge'
+    status TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'resolved'
+    resolution_action TEXT,                   -- 'keep' | 'supersede' | 'merge'
+    resolved_by TEXT,                         -- Client ID that resolved the conflict
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    resolved_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_conflicts_status_created
+    ON memory_conflicts(status, created_at DESC, namespace);
 `;
 
 /**

@@ -734,7 +734,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
 
       <div id="auth-error" class="auth-error"></div>
 
-      <form id="auth-form">
+      <form id="auth-form" onsubmit="handleAuthSubmit(event); return false;">
         <div class="form-group">
           <label class="form-label" for="token-input">MCP_BEARER_TOKEN</label>
           <input
@@ -805,6 +805,10 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
         <span class="label">D1 Deep Archive</span>
         <span class="val" id="kpi-d1">—</span>
       </div>
+      <div class="kpi-pill" style="cursor: pointer;" onclick="switchTab('tab-sleep', document.querySelector('[data-tab=tab-sleep]'))">
+        <span class="label">Governance Conflicts</span>
+        <span class="val" id="kpi-conflicts">—</span>
+      </div>
       <div class="kpi-pill">
         <span class="label">Next 03:00 AM Sleep Cycle</span>
         <span class="val" style="color: var(--cyan);" id="kpi-alarm-countdown">—</span>
@@ -837,7 +841,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
         🗂️ 2. Memory Types Status & Content by Namespace
       </button>
       <button class="tab-btn" data-tab="tab-sleep" onclick="switchTab('tab-sleep', this)">
-        🌙 3. Sleep Cycle, Episodic Queue, ADRs & Diff Rollback
+        🌙 3. Sleep Cycle, Governance Watchdog, ADRs & Diff Rollback
       </button>
     </div>
     <div style="font-size: 11.5px; color: var(--text-2); font-family: var(--font-mono);" id="last-sync-label">
@@ -1061,9 +1065,23 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
   </section>
 
   <!-- =========================================================================
-       TAB 3: NOCTURNAL SLEEP CYCLE, EPISODIC QUEUE, ADRS & MUTATION DIFFS
+       TAB 3: NOCTURNAL SLEEP CYCLE, GOVERNANCE WATCHDOG, ADRS & MUTATION DIFFS
        ========================================================================= -->
   <section id="tab-sleep" class="view-section">
+    <!-- Active Memory Governance & Semantic Contradiction Triage Panel -->
+    <div class="panel" style="margin-bottom: 16px;">
+      <div class="panel-header">
+        <div class="panel-title">🛡️ Active Memory Governance & Semantic Contradiction Triage (memory_conflicts)</div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <span class="badge badge-amber" id="conflicts-count-badge">0 Pending</span>
+          <button class="btn btn-sm btn-primary" onclick="triggerConflictAuditNow()" id="btn-audit-conflicts">
+            🔍 Run Contradiction Audit Now
+          </button>
+        </div>
+      </div>
+      <div class="panel-body" id="conflicts-container" style="max-height: 460px; overflow-y: auto;"></div>
+    </div>
+
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 16px;">
       <!-- Pending Episodic Scratchpad Logs -->
       <div class="panel">
@@ -1191,8 +1209,8 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
       return data;
     }
 
-    document.getElementById("auth-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
+    async function handleAuthSubmit(e) {
+      if (e) e.preventDefault();
       const rawToken = document.getElementById("token-input").value;
       const token = normalizeToken(rawToken);
       const mode = document.getElementById("storage-mode").value;
@@ -1207,6 +1225,15 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
         saveToken(token, mode);
         await refreshDashboard();
         document.getElementById("auth-overlay").classList.add("hidden");
+        try {
+          const cleanUrl = new URL(window.location.href);
+          cleanUrl.searchParams.delete("reset");
+          cleanUrl.searchParams.delete("logout");
+          if (cleanUrl.pathname === "/mcp" && !cleanUrl.searchParams.has("ui")) {
+            cleanUrl.searchParams.set("ui", "1");
+          }
+          window.history.replaceState({}, "", cleanUrl.pathname + cleanUrl.search);
+        } catch {}
       } catch (err) {
         sessionStorage.removeItem(STORAGE_KEY);
         localStorage.removeItem(STORAGE_KEY);
@@ -1216,7 +1243,8 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
         btn.disabled = false;
         btn.textContent = "🔓 Unlock Cognitive NOC Dashboard";
       }
-    });
+      return false;
+    }
 
     function switchTab(tabId, btnEl) {
       document.querySelectorAll(".view-section").forEach((s) => s.classList.remove("active"));
@@ -1283,6 +1311,12 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
       document.getElementById("kpi-adrs").textContent = t.activeDecisions.toLocaleString();
       document.getElementById("kpi-d1").textContent =
         (t.d1ArchiveCount || 14422).toLocaleString() + " Docs";
+      const pendingConf = Number(t.pendingConflicts || 0);
+      const confEl = document.getElementById("kpi-conflicts");
+      if (confEl) {
+        confEl.textContent = pendingConf === 0 ? "0 Pending ✓" : pendingConf + " Pending ⚠️";
+        confEl.style.color = pendingConf === 0 ? "var(--emerald)" : "var(--amber)";
+      }
     }
 
     // Live countdown timer to 03:00 AM AST / 07:00 UTC
@@ -2166,6 +2200,15 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
       const runs = sc.consolidationRuns || [];
       const mutations = sc.recentMutations || [];
       const adrs = sc.activeDecisions || [];
+      const conflicts = sc.conflicts || [];
+      const pendingConflicts = conflicts.filter((c) => c.status === "pending");
+
+      const confBadge = document.getElementById("conflicts-count-badge");
+      if (confBadge) {
+        confBadge.textContent =
+          pendingConflicts.length + " Pending • " + (conflicts.length - pendingConflicts.length) + " Resolved";
+        confBadge.className = "badge " + (pendingConflicts.length > 0 ? "badge-amber" : "badge-emerald");
+      }
 
       document.getElementById("pending-episodic-badge").textContent =
         (sc.pendingCount || 0) + " Pending Consolidation";
@@ -2175,6 +2218,69 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
         mutations.length + " Recent Mutations";
       document.getElementById("adrs-count-badge").textContent =
         adrs.length + " Active Rules";
+
+      // 0. Semantic Contradiction Triage Queue (memory_conflicts)
+      const confContainer = document.getElementById("conflicts-container");
+      if (confContainer) {
+        confContainer.innerHTML =
+          conflicts.length === 0
+            ? '<div style="font-size:12.5px; color:var(--emerald);">✓ No semantic or Knowledge Graph contradictions detected. Click "🔍 Run Contradiction Audit Now" to compare recent memories against existing semantic triples and ADRs.</div>'
+            : conflicts
+                .map((c) => {
+                  const isPending = c.status === "pending";
+                  const sevBadge =
+                    c.severity === "high"
+                      ? "badge-rose"
+                      : c.severity === "low"
+                      ? "badge-slate"
+                      : "badge-amber";
+                  const oldRef = c.existing_memory_id || c.existing_edge_id || c.existing_decision_id || "unknown";
+                  const newRef = c.new_memory_id || c.new_edge_id || "latest";
+                  return \`
+                    <div class="surface-card" style="border-color: \${isPending ? 'rgba(245, 158, 11, 0.45)' : 'var(--border)'};">
+                      <div class="surface-top">
+                        <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+                          <span class="badge \${isPending ? 'badge-amber' : 'badge-emerald'}">
+                            \${isPending ? '⚠️ PENDING TRIAGE' : '✓ RESOLVED (' + escapeHtml((c.resolution_action || '').toUpperCase()) + ')'}
+                          </span>
+                          <span class="badge \${sevBadge}">\${escapeHtml(c.severity.toUpperCase())}</span>
+                          <span class="badge badge-cyan">\${escapeHtml(c.conflict_type)}</span>
+                          <span class="badge badge-slate">\${escapeHtml(c.namespace)}</span>
+                          <strong style="font-size:12.5px;">Conflict #\${c.conflict_id}</strong>
+                          <span style="font-size:11px; color:var(--text-2); font-family:var(--font-mono);">
+                            Recommended: <strong style="color:var(--cyan);">\${escapeHtml(c.suggested_action)}</strong> • \${formatRelativeTime(c.created_at)}
+                          </span>
+                        </div>
+                        \${
+                          isPending
+                            ? \`
+                              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                                <button class="btn btn-sm" onclick="resolveConflictById(\${c.conflict_id}, 'keep')" title="Keep existing memory/triple as authoritative">
+                                  ✓ Keep Existing
+                                </button>
+                                <button class="btn btn-sm btn-amber" onclick="resolveConflictById(\${c.conflict_id}, 'supersede')" title="Supersede old memory/triple & clean Vectorize">
+                                  ⚡ Supersede Old
+                                </button>
+                                <button class="btn btn-sm btn-emerald" onclick="resolveConflictById(\${c.conflict_id}, 'merge')" title="Synthesize old + new into updated memory">
+                                  🔀 Merge Both
+                                </button>
+                              </div>
+                            \`
+                            : \`<span style="font-size:11px; color:var(--text-2); font-family:var(--font-mono);">by \${escapeHtml(c.resolved_by || 'operator')}</span>\`
+                        }
+                      </div>
+                      <div style="font-size:12px; color:var(--text-0); margin:6px 0;">
+                        <strong>Why Flagged:</strong> \${escapeHtml(c.reason)}
+                      </div>
+                      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:8px;">
+                        <div class="diff-box diff-old" style="margin-top:0;">- EXISTING (\${escapeHtml(oldRef)}): \${escapeHtml(c.existing_title || "")}<br/>\${escapeHtml(c.existing_snippet || "")}</div>
+                        <div class="diff-box diff-new" style="margin-top:0;">+ NEW (\${escapeHtml(newRef)}): \${escapeHtml(c.new_title || "")}<br/>\${escapeHtml(c.new_snippet || "")}</div>
+                      </div>
+                    </div>
+                  \`;
+                })
+                .join("");
+      }
 
       // 1. Episodic Logs
       document.getElementById("episodic-logs-container").innerHTML =
@@ -2304,7 +2410,11 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
         alert(
           "Sleep Cycle Complete! Consolidated " +
             (res.consolidatedCount || 0) +
-            " episodic events. Next alarm: " +
+            " episodic events | Detected " +
+            (res.conflictsDetected || 0) +
+            " new conflict(s) (" +
+            (res.pendingConflictsCount || 0) +
+            " pending). Next alarm: " +
             (res.nextAlarmIso || "scheduled")
         );
         await refreshDashboard();
@@ -2313,6 +2423,56 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
       } finally {
         btn.disabled = false;
         btn.textContent = "🌙 Run Sleep Cycle Now";
+      }
+    }
+
+    async function triggerConflictAuditNow() {
+      const btn = document.getElementById("btn-audit-conflicts");
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "⏳ Auditing Contradictions...";
+      }
+      try {
+        const res = await apiNocCall("audit_conflicts", { hours: 24, limit: 5 });
+        alert(
+          "Semantic Contradiction Audit Complete! Audited " +
+            (res.auditedMemoriesCount || 0) +
+            " recent memories -> Detected " +
+            (res.detectedCount || 0) +
+            " new conflict(s) (" +
+            (res.pendingCount || 0) +
+            " total pending)."
+        );
+        await refreshDashboard();
+      } catch (err) {
+        alert("Contradiction audit error: " + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "🔍 Run Contradiction Audit Now";
+        }
+      }
+    }
+
+    async function resolveConflictById(conflictId, action) {
+      const labels = {
+        keep: "KEEP the existing memory/triple and dismiss Conflict #" + conflictId,
+        supersede: "SUPERSEDE the older memory/triple (and remove stale vector) for Conflict #" + conflictId,
+        merge: "MERGE old + new observations into an updated authoritative memory for Conflict #" + conflictId
+      };
+      if (!confirm("Confirm 15s Governance Triage:\\n\\n" + (labels[action] || action) + "?")) {
+        return;
+      }
+      try {
+        const res = await apiNocCall("resolve_conflict", {
+          conflictId,
+          action,
+          clientId: "dashboard-noc-operator"
+        });
+        alert("Conflict #" + conflictId + " resolved via '" + res.action + "'!");
+        await refreshDashboard();
+      } catch (err) {
+        alert("Conflict resolution failed: " + err.message);
       }
     }
 
@@ -2357,6 +2517,15 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
       const params = new URLSearchParams(window.location.search);
       if (params.has("reset") || params.has("logout")) {
         lockSession();
+        try {
+          const cleanUrl = new URL(window.location.href);
+          cleanUrl.searchParams.delete("reset");
+          cleanUrl.searchParams.delete("logout");
+          if (cleanUrl.pathname === "/mcp" && !cleanUrl.searchParams.has("ui")) {
+            cleanUrl.searchParams.set("ui", "1");
+          }
+          window.history.replaceState({}, "", cleanUrl.pathname + cleanUrl.search);
+        } catch {}
         return;
       }
       const existing = getStoredToken();

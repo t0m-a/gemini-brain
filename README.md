@@ -11,11 +11,11 @@
 [![Cloudflare Workers & DO](https://img.shields.io/badge/Cloudflare-Durable_Objects_SQLite-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](./wrangler.jsonc)
 [![Vectorize Dual-Index](https://img.shields.io/badge/Vectorize-bge--m3_(1024d)_%2B_bge--reranker-8B5CF6?style=for-the-badge&logo=cloudflare&logoColor=white)](./src/federation.ts)
 [![Cloudflare D1 Archive](https://img.shields.io/badge/Cloudflare_D1-14,422%2B_KB_Records-F59E0B?style=for-the-badge&logo=sqlite&logoColor=white)](./src/federation.ts)
-[![Workers AI Consolidation](https://img.shields.io/badge/Workers_AI-Llama_3.3_70B_Sleep_Cycle-EC4899?style=for-the-badge&logo=meta&logoColor=white)](./src/memory-do.ts)
+[![Workers AI Consolidation](https://img.shields.io/badge/Workers_AI-Llama_3.3_70B_Sleep_%2B_Triage-EC4899?style=for-the-badge&logo=meta&logoColor=white)](./src/memory-do.ts)
 [![RPi5 Edge Sync](https://img.shields.io/badge/Raspberry_Pi_5-Debian_13_AST_%2B_Qdrant_Sync-A22846?style=for-the-badge&logo=raspberrypi&logoColor=white)](./rpi-sync/brain_watcher.py)
 [![TypeScript 5.8](https://img.shields.io/badge/TypeScript-5.8_Strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](./tsconfig.json)
 
-**A stateful, globally distributed cognitive layer hosted on the Cloudflare Edge (`v1.4.1`) that unifies Google Antigravity, Gemini CLI, the Gemini Web App (via native OAuth 2.0/2.1), a live Cognitive NOC Web Dashboard, and a Raspberry Pi 5 Home Lab into a single persistent memory brain.**
+**A stateful, globally distributed cognitive layer hosted on the Cloudflare Edge (`v1.5.0`) that unifies Google Antigravity, Gemini CLI, the Gemini Web App (via native OAuth 2.0/2.1), a live Cognitive NOC Web Dashboard, Active Memory Governance & Semantic Contradiction Triage (`memory_conflicts`), and a Raspberry Pi 5 Home Lab into a single persistent memory brain.**
 
 [Layman's Architecture](#-part-i-architecture--how-it-works-in-laymans-terms) •
 [How to Use & Schedules](#-part-ii-how-to-use-it-laymans-guide-modules-roles--schedules) •
@@ -198,7 +198,11 @@ Human brains don't keep every raw sensory detail from the day forever; during de
   3. Resolved errors and debugging lessons.
 - **Step 3 (Store Long-Term Wisdom):** It saves that digest as a permanent searchable memory (`episodic_summary`), generates its 1024-dim vector fingerprint, and marks the raw sticky notes as consolidated (`consolidated = 1`).
 - **Step 4 (Re-weight the Mind-Map):** It recalculates the **PageRank centrality score** of every node in your Knowledge Graph—so equipment, services, and concepts that have the most connections pointing to them naturally gain higher priority in future searches.
-- **Step 5 (Reset Alarm):** Finally, it sets its own alarm clock for 03:00 AM the next night and goes back to sleep.
+- **Step 5 (Active Memory Governance & Contradiction Triage):** Rather than letting outdated architectural decisions keep equal retrieval weight alongside current ones, the nocturnal job acts as an **active consistency auditor** (`auditContradictionsNow()`):
+  1. **Functional Triple Watchdog:** Checks whether any single-valued Knowledge Graph relation (`ROUTES_TO`, `RUNS_ON`, `HOSTED_ON`, `USES_MODEL`, `GOVERNED_BY`, `LISTENS_ON`, `PORT`, `VERSION`, `STATUS`, `PRIMARY_DB`, `REPLACES`) now points to a new target while an older edge is still active.
+  2. **Llama 3.3 70B Semantic Contradiction Check:** Compares tonight's newly consolidated digest against top matching existing semantic memories (`memories_fts` BM25) and active ADRs (`decisions`), staging any genuine contradictions into the `memory_conflicts` SQLite queue (while strictly protecting `node:rpi5` and `service:rpi5-qdrant-knowledge-hub` active graph state).
+  3. **15-Second Morning Triage:** When you run morning hydration (`get_overnight_diff` or `python brain_monitor.py hydrate`), any pending conflicts are surfaced so you can choose **`keep`**, **`supersede`** (which retires `memories.superseded_by`, expires `edges.valid_until`, and deletes the stale vector from Vectorize), or **`merge`**.
+- **Step 6 (Reset Alarm):** Finally, it sets its own alarm clock for 03:00 AM the next night and goes back to sleep.
 
 ---
 
@@ -209,7 +213,7 @@ Human brains don't keep every raw sensory detail from the day forever; during de
 Because `https://brain.tsimon.me/mcp` is registered in your local configuration files (`C:\Users\simon\.gemini\settings.json` and `C:\Users\simon\.gemini\config\mcp_config.json`), **Google Antigravity** and **Gemini CLI** talk to the Brain directly via the `0 ms` static `MCP_BEARER_TOKEN` fast-path. You don't need to write code—just ask in plain English!
 
 ### 🌅 Action A: Hydrate Morning Sessions (`get_overnight_diff`)
-Pull the last 12–24 hours of memory mutations, before/after state diffs, new ADRs, and 03:00 AM nocturnal consolidation digests:
+Pull the last 12–24 hours of memory mutations, before/after state diffs, pending `memory_conflicts`, new ADRs, and 03:00 AM nocturnal consolidation digests:
 > *"Run `get_overnight_diff` for the last 24 hours to hydrate this morning's session."*
 
 ### 🔍 Action B: Recall Context (`hybrid_recall`)
@@ -229,7 +233,11 @@ Record an Architecture Decision Record (ADR) so future AI sessions always obey i
 Save a quick checkpoint during debugging so the 3:00 AM sleep cycle includes it:
 > *"Log an episodic `checkpoint` event for this session summarizing our D1 + Vectorize federation work."*
 
-### 🏁 Action F: End-of-Session & Morning Workflows (`checkpoint-session` & `hydrate-morning-session` Prompts)
+### 🛡️ Action F: Triage & Resolve Semantic Contradictions (`resolve_conflict`)
+List pending contradictions, trigger an on-demand LLM + Knowledge Graph contradiction audit, or resolve a flagged conflict in 15 seconds (`keep`, `supersede`, or `merge`):
+> *"Use `resolve_conflict` with `action: 'audit'` to check recent memories for contradictions, or resolve conflict `#1` with `action: 'supersede'`."*
+
+### 🏁 Action G: End-of-Session & Morning Workflows (`checkpoint-session` & `hydrate-morning-session` Prompts)
 Trigger the built-in MCP prompts at the start or end of a coding session:
 > *"Run the `checkpoint-session` workflow for project `tsimon.me` to log an episodic checkpoint and extract permanent facts and ADRs from our session today."*
 
@@ -237,7 +245,7 @@ Trigger the built-in MCP prompts at the start or end of a coding session:
 
 ## 2. Using the Brain in the Gemini Web App (Native OAuth 2.0 Connector & CLI Bridge)
 
-As of **`gemini-brain` v1.4.1**, the **Gemini Web App** connects **natively** to `https://brain.tsimon.me/mcp` using standard **OAuth 2.0 / 2.1 backed by Cloudflare Zero Trust OIDC** (`wandering-grass-64c7.cloudflareaccess.com`)—giving you live, direct access to all 5 MCP tools inside Gemini Web chat without manual copy/pasting!
+As of **`gemini-brain` v1.5.0**, the **Gemini Web App** connects **natively** to `https://brain.tsimon.me/mcp` using standard **OAuth 2.0 / 2.1 backed by Cloudflare Zero Trust OIDC** (`wandering-grass-64c7.cloudflareaccess.com`)—giving you live, direct access to all 6 MCP tools inside Gemini Web chat without manual copy/pasting!
 
 ### 2.1 Primary Method: Direct Native OAuth 2.0 Connection in Gemini Web App
 
@@ -271,7 +279,7 @@ sequenceDiagram
 3. Click **Connect / Authorize**:
    - You will be redirected once through your **Cloudflare Zero Trust Login Portal** (`wandering-grass-64c7.cloudflareaccess.com`).
    - Upon completion, `brain.tsimon.me/token` issues a **30-day HMAC-SHA256 signed `access_token` (`bat.*`)** and **365-day `refresh_token` (`brt.*`)**.
-   - All 5 MCP tools (`get_overnight_diff`, `hybrid_recall`, `log_decision`, `log_episodic_event`, `remember_fact`) execute directly in chat over stateless JSON-mode Streamable HTTP (`enableJsonResponse: true`).
+   - All 6 MCP tools (`get_overnight_diff`, `hybrid_recall`, `log_decision`, `log_episodic_event`, `remember_fact`, `resolve_conflict`) execute directly in chat over stateless JSON-mode Streamable HTTP (`enableJsonResponse: true`).
 
 ---
 
@@ -310,13 +318,13 @@ Write-Host "Copied <brain_context> to clipboard! Paste (Ctrl+V) into Gemini Web.
 
 ## 3. Using the Cognitive NOC Web Dashboard (`/mcp?ui=1` & Local Launcher)
 
-Gemini Brain includes a built-in **Cognitive NOC Web Dashboard** ([src/dashboard.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/dashboard.ts)) for visual observability, interactive Knowledge Graph exploration, before/after mutation diff auditing, 1-click rollbacks, and live 4-way RRF + Cross-Encoder Rerank testing.
+Gemini Brain includes a built-in **Cognitive NOC Web Dashboard** ([src/dashboard.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/dashboard.ts)) for visual observability, interactive Knowledge Graph exploration, **Active Memory Governance & Semantic Contradiction Triage (`memory_conflicts`)**, before/after mutation diff auditing, 1-click rollbacks, and live 4-way RRF + Cross-Encoder Rerank testing.
 
 ### 🌐 Cloud Access (`https://brain.tsimon.me/mcp?ui=1`)
-- **Primary Cloud URL**: `https://brain.tsimon.me/mcp?ui=1` *(also accessible at `/dashboard` and `/ui`; append `?reset=1` to clear stored browser session state)*.
+- **Primary Cloud URL**: `https://brain.tsimon.me/mcp?ui=1` *(also accessible at `/dashboard` and `/ui`; append `?reset=1` to clear stored browser session state—the dashboard automatically cleans `&reset=1` from the URL bar after locking so subsequent refreshes stay unlocked)*.
 - **Zero-Secret HTML Shell & WAF-Safe Multiplexing (`ADR-05`)**:
   - No secrets are ever embedded in the HTML source. On first visit, paste your `MCP_BEARER_TOKEN` into the authentication prompt (the browser automatically strips `MCP_BEARER_TOKEN=`, `Bearer `, quotes, and whitespace).
-  - All interactive actions (`dashboard`, `recall`, `consolidate`, `reindex`, `rollback`) multiplex over **`POST /mcp?noc=<action>`** (`X-Brain-Noc-Action`) and return HTTP `200 OK` with structured `{ ok: false, authError }` on invalid credentials so Cloudflare WAF / Super Bot Fight Mode never triggers `403` rate-limit lockouts.
+  - All interactive actions (`dashboard`, `recall`, `consolidate`, `reindex`, `rollback`, `conflicts`, `audit_conflicts`, `resolve_conflict`) multiplex over **`POST /mcp?noc=<action>`** (`X-Brain-Noc-Action`) and return HTTP `200 OK` with structured `{ ok: false, authError }` on invalid credentials so Cloudflare WAF / Super Bot Fight Mode never triggers `403` rate-limit lockouts.
 
 ### 💻 Local Zero-WAF Proxy Launcher (`brain-dashboard.ps1`)
 To launch the dashboard locally with automatic `.dev.vars` token injection:
@@ -326,11 +334,20 @@ Set-Location "C:\Users\simon\Workspaces\gemini-brain"
 # Opens http://127.0.0.1:8765/dashboard via brain_dashboard_server.py
 ```
 
-### 🖥️ CLI Audit & Rollback Monitor (`brain-monitor.ps1`)
-For terminal-based overnight diff inspection, consolidation log auditing, and mutation rollback:
+### 🖥️ CLI Audit, Morning Hydration & Contradiction Triage (`brain-monitor.ps1` / `brain_monitor.py`)
+For terminal-based overnight diff inspection, 15-second semantic contradiction triage (`keep` / `supersede` / `merge`), consolidation log auditing, and mutation rollback:
 ```powershell
 Set-Location "C:\Users\simon\Workspaces\gemini-brain"
 .\brain-monitor.ps1
+
+# Run an immediate LLM + Knowledge Graph contradiction audit & interactive 15s triage
+python .\brain_monitor.py triage --audit
+
+# Hydrate morning session (prompts 15s keep/supersede/merge if conflicts are pending, then copies to clipboard)
+python .\brain_monitor.py hydrate --hours 12 --clip
+
+# Resolve a specific conflict non-interactively
+python .\brain_monitor.py triage --id 1 --action supersede
 ```
 
 ---
@@ -378,12 +395,12 @@ Below is the complete, unomitted inventory of **every module in the system**, **
 
 | Module / File | Plain-English Role | Every Function Inside & What It Does | Exact Schedule / When It Runs |
 | :--- | :--- | :--- | :--- |
-| **[src/index.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/index.ts)**<br/>*The Front Door, OAuth 2.1 Proxy & NOC Router* | Welcomes incoming connections at `brain.tsimon.me`, runs the Dual-Mode Security Gate (`MCP_BEARER_TOKEN` Fast-Path + Signed OAuth 2.0/OIDC), serves the Cognitive NOC UI (`/mcp?ui=1`), and routes JSON-mode MCP requests to your Brain vault. | • `fetch()`: Handles static browser probes (`/favicon.ico`), serves public OAuth 2.0/2.1 discovery (`/.well-known/oauth-*`) and proxy routes (`/authorize`, `/callback`, `/token`, `/userinfo`, `/register`), multiplexes NOC dashboard AJAX calls (`POST /mcp?noc=<action>`), enforces the Dual-Mode Auth Gate, and runs `WebStandardStreamableHTTPServerTransport` (`enableJsonResponse: true`).<br/>• `createBrainMcpServer()`: Registers the **5 Tools** (`get_overnight_diff`, `hybrid_recall`, `log_decision`, `log_episodic_event`, `remember_fact`), **3 Resources** (`brain://decisions/active`, `brain://telemetry/status`, `brain://audit/overnight`), and **2 Prompts** (`checkpoint-session`, `hydrate-morning-session`).<br/>• `createSignedToken()` & `verifySignedToken()`: Mints and verifies HMAC-SHA256 signed OAuth states (`bstate.*`), codes (`bcode.*`), 30-day access tokens (`bat.*`), and 365-day refresh tokens (`brt.*`).<br/>• `verifyCloudflareOidcToken()`: Validates Cloudflare Access OIDC tokens via RS256 Web Crypto JWKS and `/userinfo` with 5-minute edge caching. | **On-Demand (Real-Time):** Wakes up instantly (<1 millisecond) whenever any tool, browser dashboard, or OAuth client sends an HTTP request to `brain.tsimon.me`. |
-| **[src/dashboard.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/dashboard.ts)**<br/>*The Cognitive NOC Web UI* | Renders the interactive browser dashboard for inspecting memories, Knowledge Graph nodes/edges, overnight mutation diffs, consolidation runs, and live 4-way RRF search. | • `renderDashboardHtml()`: Generates the zero-secret single-page NOC application served at `GET /mcp?ui=1`, `/dashboard`, and `/ui`, communicating exclusively over WAF-safe `POST /mcp?noc=<action>` requests. | **On-Demand (Real-Time):** Rendered whenever you open `https://brain.tsimon.me/mcp?ui=1` or `http://127.0.0.1:8765/dashboard`. |
-| **[src/memory-do.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts)**<br/>*The Master Librarian & Nightly Dreamer (`BrainMemoryDO`)* | Your personal, permanent Brain vault on Cloudflare. Holds the SQLite database, coordinates AI embeddings, runs 4-way search + neural reranking, tracks mutation audits/rollbacks, and runs the 3:00 AM nightly sleep cycle. | • `constructor()`: Sets up all 8 database tables & triggers safely before taking requests and checks that the 3:00 AM alarm is set.<br/>• `rememberFact()` & `rememberFactsBatch()`: Turns facts into 1024-dim `bge-m3` vectors, records before/after audit diffs in `memory_mutations`, updates SQLite + Knowledge Graph triples, and indexes in Cloudflare Vectorize.<br/>• `hybridRecall()`: Coordinates 4-way search across the Brain and `kb.tsimon.me`, runs Stage-2 Cross-Encoder Neural Reranking (`@cf/baai/bge-reranker-base`), expands 1-hop Mind-Map neighbors, increments `access_count`, and compiles `<brain_context>`.<br/>• `getOvernightDiff()` & `rollbackMutation()`: Produces morning hydration briefings of recent INSERT/UPDATE/DELETE/CONSOLIDATE/ROLLBACK mutations and restores prior memory states on rollback.<br/>• `getDashboardSnapshot()`, `getConsolidationLogs()`, `reindexMemories()`, `runConsolidationNow()`: Powers the Cognitive NOC Dashboard and CLI audit tools.<br/>• `logDecision()` & `logEpisodicEvent()`: Saves ADRs and raw daytime notes.<br/>• `alarm()`: **The 3:00 AM Sleep Cycle**—summarizes unconsolidated daytime notes using `Llama 3.3 70B`, logs run telemetry in `consolidation_runs`, updates PageRank scores, and re-arms the alarm. | • **On-Demand (Real-Time):** Whenever `src/index.ts` routes an MCP tool, resource, or NOC action to it.<br/>• **Scheduled Daily at `03:00:00 AM America/La_Paz` (`07:00:00 UTC`):** The `alarm()` method wakes up automatically every 24 hours. |
+| **[src/index.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/index.ts)**<br/>*The Front Door, OAuth 2.1 Proxy & NOC Router* | Welcomes incoming connections at `brain.tsimon.me`, runs the Dual-Mode Security Gate (`MCP_BEARER_TOKEN` Fast-Path + Signed OAuth 2.0/OIDC), serves the Cognitive NOC UI (`/mcp?ui=1`), and routes JSON-mode MCP requests to your Brain vault. | • `fetch()`: Handles static browser probes (`/favicon.ico`), serves public OAuth 2.0/2.1 discovery (`/.well-known/oauth-*`) and proxy routes (`/authorize`, `/callback`, `/token`, `/userinfo`, `/register`), multiplexes NOC dashboard AJAX calls (`POST /mcp?noc=<action>`), enforces the Dual-Mode Auth Gate, and runs `WebStandardStreamableHTTPServerTransport` (`enableJsonResponse: true`).<br/>• `createBrainMcpServer()`: Registers the **6 Tools** (`get_overnight_diff`, `hybrid_recall`, `log_decision`, `log_episodic_event`, `remember_fact`, `resolve_conflict`), **3 Resources** (`brain://decisions/active`, `brain://telemetry/status`, `brain://audit/overnight`), and **2 Prompts** (`checkpoint-session`, `hydrate-morning-session`).<br/>• `createSignedToken()` & `verifySignedToken()`: Mints and verifies HMAC-SHA256 signed OAuth states (`bstate.*`), codes (`bcode.*`), 30-day access tokens (`bat.*`), and 365-day refresh tokens (`brt.*`).<br/>• `verifyCloudflareOidcToken()`: Validates Cloudflare Access OIDC tokens via RS256 Web Crypto JWKS and `/userinfo` with 5-minute edge caching. | **On-Demand (Real-Time):** Wakes up instantly (<1 millisecond) whenever any tool, browser dashboard, or OAuth client sends an HTTP request to `brain.tsimon.me`. |
+| **[src/dashboard.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/dashboard.ts)**<br/>*The Cognitive NOC Web UI* | Renders the interactive browser dashboard for inspecting memories, Knowledge Graph nodes/edges, Active Memory Governance & Semantic Contradiction Triage (`memory_conflicts`), overnight mutation diffs, consolidation runs, and live 4-way RRF search. | • `renderDashboardHtml()`: Generates the zero-secret single-page NOC application served at `GET /mcp?ui=1`, `/dashboard`, and `/ui`, communicating exclusively over WAF-safe `POST /mcp?noc=<action>` requests (with automatic `?reset=1` history cleanup after session lock). | **On-Demand (Real-Time):** Rendered whenever you open `https://brain.tsimon.me/mcp?ui=1` or `http://127.0.0.1:8765/dashboard`. |
+| **[src/memory-do.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts)**<br/>*The Master Librarian, Governance Auditor & Nightly Dreamer (`BrainMemoryDO`)* | Your personal, permanent Brain vault on Cloudflare. Holds the SQLite database, coordinates AI embeddings, runs 4-way search + neural reranking, enforces Active Memory Governance (`memory_conflicts`), tracks mutation audits/rollbacks, and runs the 3:00 AM nightly sleep cycle. | • `constructor()`: Sets up all 9 database tables & triggers safely before taking requests and checks that the 3:00 AM alarm is set.<br/>• `rememberFact()` & `rememberFactsBatch()`: Turns facts into 1024-dim `bge-m3` vectors, records before/after audit diffs in `memory_mutations`, flags conflicting functional Knowledge Graph triples (`triple_conflict`), updates SQLite + KG triples, and indexes in Cloudflare Vectorize.<br/>• `hybridRecall()`: Coordinates 4-way search across the Brain and `kb.tsimon.me`, runs Stage-2 Cross-Encoder Neural Reranking (`@cf/baai/bge-reranker-base`), expands 1-hop Mind-Map neighbors, increments `access_count`, and compiles `<brain_context>`.<br/>• `auditContradictionsNow()`, `resolveMemoryConflict()`, `getMemoryConflicts()`: Runs deterministic KG + Llama 3.3 70B semantic contradiction checks (protecting `node:rpi5` and `service:rpi5-qdrant-knowledge-hub`) and executes 15-second `keep` / `supersede` / `merge` decisions.<br/>• `getOvernightDiff()` & `rollbackMutation()`: Produces morning hydration briefings (including pending `memory_conflicts`) and restores prior memory/vector states on rollback.<br/>• `getDashboardSnapshot()`, `getConsolidationLogs()`, `reindexMemories()`, `runConsolidationNow()`: Powers the Cognitive NOC Dashboard and CLI audit tools.<br/>• `logDecision()` & `logEpisodicEvent()`: Saves ADRs and raw daytime notes.<br/>• `alarm()`: **The 3:00 AM Sleep Cycle**—summarizes unconsolidated daytime notes using `Llama 3.3 70B`, audits for semantic contradictions against existing memories/triples/ADRs, logs run telemetry in `consolidation_runs`, updates PageRank scores, and re-arms the alarm. | • **On-Demand (Real-Time):** Whenever `src/index.ts` routes an MCP tool, resource, or NOC action to it.<br/>• **Scheduled Daily at `03:00:00 AM America/La_Paz` (`07:00:00 UTC`):** The `alarm()` method wakes up automatically every 24 hours. |
 | **[src/federation.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/federation.ts)**<br/>*The Archive Bridge, Reranker & Suitcase Packer* | Searches the 14,422-record `kb.tsimon.me` archive, merges all 4 search lists using RRF + `@cf/baai/bge-reranker-base`, and packs the final `<brain_context>` within your token budget. | • `estimateTokens()` & `buildSafeFts5Query()`: Estimates token counts and sanitizes natural-language FTS5 queries.<br/>• `queryKbArchive()` & `ingestKbArchiveBatch()`: Runs parallel D1 `kb_fts` + 768-dim `archive-kb-index` vector search hydrated via `rel_path`, and supports batch archive ingestion.<br/>• `KbFederationService.searchKb()`: Internal `WorkerEntrypoint` for zero-latency cross-Worker search.<br/>• `fuseBrainAndKb()`: Combines all 4 search lists via Weighted RRF ($k=60$), executes Stage-2 Cross-Encoder Neural Reranking (`bge-reranker-base`) on top candidates, promotes #1 signal leaders, and packs `<brain_context>`. | **On-Demand (Real-Time):** Runs in parallel inside every `hybrid_recall` request. |
-| **[src/schema.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/schema.ts)**<br/>*The Database Blueprint & Search Formulas* | Defines the 8 database tables inside the Brain, automatic FTS5 sync triggers, and parameterized SQL for lexical search and Mind-Map traversal. | • `SCHEMA_DDL`: Creates `memories`, `memories_fts`, `entities`, `edges`, `decisions`, `episodic_logs`, `memory_mutations`, and `consolidation_runs`, plus **3 automatic triggers** (`trg_memories_ai`, `trg_memories_ad`, `trg_memories_au`).<br/>• `LEXICAL_HYBRID_SQL` & `GRAPH_EXPANSION_SQL`: Scores BM25 word matches with age decay and walks 1-hop Mind-Map connections ordered by `pagerank_score`. | • **On Cold Start:** `SCHEMA_DDL` runs once when `BrainMemoryDO` wakes up.<br/>• **On Every Write / Recall:** Triggers and SQL queries execute in real time. |
-| **[brain-dashboard.ps1](file:///c:/Users/simon/Workspaces/gemini-brain/brain-dashboard.ps1)**, **[brain_dashboard_server.py](file:///c:/Users/simon/Workspaces/gemini-brain/brain_dashboard_server.py)** & **[brain_monitor.py](file:///c:/Users/simon/Workspaces/gemini-brain/brain_monitor.py)**<br/>*Local NOC Proxy & CLI Audit Tools* | Provides a local Zero-WAF proxy server (`http://127.0.0.1:8765/dashboard`) and terminal TUI for auditing overnight diffs, consolidation logs, and rolling back mutations. | • Reads `MCP_BEARER_TOKEN` from `.dev.vars` locally and proxies dashboard/audit requests to `brain.tsimon.me`. | **On-Demand (Manual):** Run `.\brain-dashboard.ps1` or `.\brain-monitor.ps1` from PowerShell. |
+| **[src/schema.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/schema.ts)**<br/>*The Database Blueprint & Search Formulas* | Defines the 9 database tables inside the Brain, automatic FTS5 sync triggers, and parameterized SQL for lexical search and Mind-Map traversal. | • `SCHEMA_DDL`: Creates `memories`, `memories_fts`, `entities`, `edges`, `decisions`, `episodic_logs`, `memory_mutations`, `consolidation_runs`, and `memory_conflicts`, plus **3 automatic triggers** (`trg_memories_ai`, `trg_memories_ad`, `trg_memories_au`).<br/>• `LEXICAL_HYBRID_SQL` & `GRAPH_EXPANSION_SQL`: Scores BM25 word matches with age decay and walks 1-hop Mind-Map connections ordered by `pagerank_score`. | • **On Cold Start:** `SCHEMA_DDL` runs once when `BrainMemoryDO` wakes up.<br/>• **On Every Write / Recall:** Triggers and SQL queries execute in real time. |
+| **[brain-dashboard.ps1](file:///c:/Users/simon/Workspaces/gemini-brain/brain-dashboard.ps1)**, **[brain_dashboard_server.py](file:///c:/Users/simon/Workspaces/gemini-brain/brain_dashboard_server.py)** & **[brain_monitor.py](file:///c:/Users/simon/Workspaces/gemini-brain/brain_monitor.py)**<br/>*Local NOC Proxy & CLI Audit / Triage Tools* | Provides a local Zero-WAF proxy server (`http://127.0.0.1:8765/dashboard`) and terminal TUI for auditing overnight diffs, 15s contradiction triage (`triage` / `hydrate`), consolidation logs, and rolling back mutations. | • Reads `MCP_BEARER_TOKEN` from `.dev.vars` locally and proxies dashboard/audit/triage requests to `brain.tsimon.me`. | **On-Demand (Manual):** Run `.\brain-dashboard.ps1`, `.\brain-monitor.ps1`, or `python brain_monitor.py triage` from PowerShell. |
 | **[rpi-sync/brain_watcher.py](file:///c:/Users/simon/Workspaces/gemini-brain/rpi-sync/brain_watcher.py)**<br/>*The Raspberry Pi 5 Home Lab Courier* | Watches your Raspberry Pi 5 folders and local Qdrant database 24/7, slices Python code and Markdown notes into smart chunks, and uploads changes to `brain.tsimon.me`. | • `_load_qdrant_credentials()`, `LocalSyncStateDB`, `chunk_python_file()`, `chunk_markdown_file()`, `BrainMcpClient.call_tool()`, `QdrantBrainFederator.sync_collection()`, `BrainSyncHandler`, `main()`. | • **At Boot / Service Start:** Initial directory scan + Qdrant scroll.<br/>• **Real-Time:** `2.5s` debounce after `.py` or `.md` edits.<br/>• **Every 5 Minutes (`300s`):** Qdrant scroll sync. |
 | **[.github/workflows/deploy.yml](file:///c:/Users/simon/Workspaces/gemini-brain/.github/workflows/deploy.yml)** & **[test_brain_mcp.py](file:///c:/Users/simon/Workspaces/gemini-brain/test_brain_mcp.py)**<br/>*CI/CD & Live E2E Verifier* | Type-checks, deploys updates to Cloudflare, and verifies discovery, write, recall, and federation end-to-end. | • Runs `wrangler types`, `tsc --noEmit`, `wrangler deploy`, and the 4-stage live Python verification suite. | **On Git Push to `main`** or **On-Demand** via `python test_brain_mcp.py`. |
 
@@ -392,7 +409,7 @@ Below is the complete, unomitted inventory of **every module in the system**, **
 ```mermaid
 flowchart LR
     subgraph Realtime["⚡ Real-Time (< 500ms)"]
-        RT1["MCP Tool Call<br/>(hybrid_recall, remember_fact,<br/>log_decision, log_episodic_event)"]
+        RT1["MCP Tool Call<br/>(hybrid_recall, remember_fact, log_decision,<br/>log_episodic_event, resolve_conflict)"]
         RT2["SQLite FTS5 Triggers<br/>(Instant on INSERT/UPDATE/DELETE)"]
     end
 
@@ -408,7 +425,7 @@ flowchart LR
     subgraph Nocturnal["🌙 Daily Sleep Cycle (03:00 AM America/La_Paz / 07:00 UTC)"]
         N1["BrainMemoryDO.alarm() Wakes Up"]
         N2["Synthesizes <=100 episodic_logs<br/>via Llama 3.3 70B Instruct"]
-        N3["Saves Daily Digest + Recomputes<br/>Knowledge Graph PageRank"]
+        N3["Audits Contradictions (memory_conflicts)<br/>+ Updates Knowledge Graph PageRank"]
     end
 
     Realtime --> NearRealtime --> Periodic --> Nocturnal
@@ -433,12 +450,12 @@ gemini-brain/
 ├── src/
 │   ├── index.ts                        # Stateless JSON-Mode Streamable HTTP MCP v2 server, Dual-Mode Auth, OIDC Proxy & NOC router
 │   ├── dashboard.ts                    # Cognitive NOC Web Dashboard UI shell (/mcp?ui=1, /dashboard) with WAF-safe AJAX multiplexing
-│   ├── memory-do.ts                    # Stateful Durable Object (BrainMemoryDO): SQLite, Vectorize, KG, Audits & 07:00 UTC alarm
+│   ├── memory-do.ts                    # Stateful Durable Object (BrainMemoryDO): SQLite, Vectorize, KG, Contradiction Triage & 07:00 UTC alarm
 │   ├── federation.ts                   # 4-Way Weighted RRF, Cross-Encoder Reranker (bge-reranker-base), D1 hydration & token compiler
-│   └── schema.ts                       # Embedded DO SQLite DDL (8 tables, 3 FTS5 triggers) & parameterized hybrid/KG SQL
+│   └── schema.ts                       # Embedded DO SQLite DDL (9 tables, 3 FTS5 triggers) & parameterized hybrid/KG SQL
 ├── brain-dashboard.ps1                 # Local Zero-WAF Dashboard Proxy Launcher (http://127.0.0.1:8765/dashboard)
 ├── brain_dashboard_server.py           # Local Python HTTP proxy injecting .dev.vars MCP_BEARER_TOKEN for local NOC access
-├── brain-monitor.ps1 / brain_monitor.py# CLI NOC audit, overnight diff, consolidation log inspector & 1-click rollback tool
+├── brain-monitor.ps1 / brain_monitor.py# CLI NOC audit, overnight diff, 15s contradiction triage, consolidation logs & 1-click rollback tool
 ├── sync_daily_sessions.py              # Local session harvester for Google Antigravity & Gemini CLI transcripts
 ├── package.json                        # @modelcontextprotocol/server ^2.4.0, agents ^0.33.0, zod ^4.2.0, wrangler ^4.14.0
 ├── tsconfig.json                       # ES2022 Bundler strict TypeScript configuration
@@ -482,15 +499,15 @@ flowchart TB
         AUTH["Dual-Mode Auth Gate<br/>(0ms PSK + HMAC-SHA256 bat.* + RS256 OIDC)"]
         NOC_MUX["WAF-Safe NOC Multiplexer<br/>(GET /mcp?ui=1 & POST /mcp?noc=<action>)"]
         CARD["SEP-2127 Discovery Card<br/>/server-card & /.well-known/mcp/server-card.json"]
-        MCP["McpServer v1.4.0<br/>(WebStandardStreamableHTTPServerTransport JSON-Mode)"]
+        MCP["McpServer v1.5.0<br/>(WebStandardStreamableHTTPServerTransport JSON-Mode)"]
         FED_SVC["KbFederationService<br/>(WorkerEntrypoint Cap'n Proto RPC)"]
     end
 
     subgraph DO["Singleton Cloudflare Durable Object (BrainMemoryDO: 'thomas-simon-primary-brain')"]
-        DO_RPC["RPC Dispatcher<br/>getOvernightDiff | hybridRecall | logDecision | logEpisodicEvent | rememberFact | rollbackMutation"]
-        DO_ALARM["Nocturnal Alarm Engine<br/>alarm() @ 07:00:00 UTC (03:00 AM America/La_Paz)"]
+        DO_RPC["RPC Dispatcher<br/>getOvernightDiff | hybridRecall | logDecision | logEpisodicEvent | rememberFact | resolveMemoryConflict | rollbackMutation"]
+        DO_ALARM["Nocturnal Alarm Engine & Contradiction Auditor<br/>alarm() @ 07:00:00 UTC (03:00 AM America/La_Paz)"]
         RRF["4-Way Weighted RRF + Cross-Encoder Reranker<br/>(fuseBrainAndKb in src/federation.ts)"]
-        subgraph SQLite["Embedded DO SQLite Storage (ctx.storage.sql — 8 Tables)"]
+        subgraph SQLite["Embedded DO SQLite Storage (ctx.storage.sql — 9 Tables)"]
             T_MEM[("memories<br/>(Semantic/Procedural/Summary)")]
             T_FTS[("memories_fts<br/>(FTS5 Porter Unicode61)")]
             T_ENT[("entities<br/>(KG Nodes + PageRank)")]
@@ -499,6 +516,7 @@ flowchart TB
             T_EPI[("episodic_logs<br/>(Raw Session Event Buffer)")]
             T_MUT[("memory_mutations<br/>(Before/After Audit & Rollback Log)")]
             T_RUN[("consolidation_runs<br/>(Nocturnal Run Telemetry)")]
+            T_CONF[("memory_conflicts<br/>(Semantic & KG Contradiction Queue)")]
             T_MEM ==>|"AFTER INSERT/UPDATE/DELETE Triggers"| T_FTS
             T_ENT --- T_EDGE
         end
@@ -508,7 +526,7 @@ flowchart TB
         AI_BGE_M3["Workers AI: @cf/baai/bge-m3<br/>(1024-dim Dense Embeddings)"]
         AI_BGE_BASE["Workers AI: @cf/baai/bge-base-en-v1.5<br/>(768-dim KB Embeddings)"]
         AI_RERANK["Workers AI: @cf/baai/bge-reranker-base<br/>(Stage-2 Cross-Encoder Reranker)"]
-        AI_LLAMA["Workers AI: @cf/meta/llama-3.3-70b-instruct-fp8-fast<br/>(Nocturnal Episodic Synthesis)"]
+        AI_LLAMA["Workers AI: @cf/meta/llama-3.3-70b-instruct-fp8-fast<br/>(Nocturnal Episodic Synthesis & Contradiction Audit)"]
         VEC_BRAIN[("Vectorize: gemini-brain-bge-m3<br/>(1024-dim Cosine Index)")]
         VEC_KB[("Vectorize: archive-kb-index<br/>(768-dim Cosine Index)")]
         D1_KB[("D1: archive-knowledge-db<br/>kb_fts (14,422+ Docs, Emails, CMDB)")]
@@ -524,7 +542,7 @@ flowchart TB
     NOC_MUX --> DO_RPC
     MCP -->|"DO Stub RPC"| DO_RPC
 
-    DO_RPC --> T_MEM & T_FTS & T_ENT & T_EDGE & T_DEC & T_EPI & T_MUT & T_RUN
+    DO_RPC --> T_MEM & T_FTS & T_ENT & T_EDGE & T_DEC & T_EPI & T_MUT & T_RUN & T_CONF
     DO_RPC -->|"1024-dim Embed & Query"| AI_BGE_M3 & VEC_BRAIN
     DO_RPC -->|"queryKbArchive()"| AI_BGE_BASE & VEC_KB & D1_KB
     VEC_KB -.->|"Hydrate via metadata.rel_path"| D1_KB
@@ -532,8 +550,8 @@ flowchart TB
     RRF -->|"Stage-2 Rerank Top 16"| AI_RERANK
 
     DO_ALARM -->|"Read consolidated=0"| T_EPI
-    DO_ALARM -->|"Synthesize Digest"| AI_LLAMA
-    DO_ALARM -->|"rememberFact() + PageRank + consolidation_runs"| T_MEM & T_ENT & T_RUN & VEC_BRAIN
+    DO_ALARM -->|"Synthesize Digest + Audit Contradictions"| AI_LLAMA
+    DO_ALARM -->|"rememberFact() + PageRank + consolidation_runs + memory_conflicts"| T_MEM & T_ENT & T_RUN & T_CONF & VEC_BRAIN
 ```
 
 ---
@@ -556,35 +574,39 @@ flowchart TB
   2. **HMAC-SHA256 Signed OAuth Token (`< 0.1 ms` overhead)**: Verifies `bat.*` tokens issued to the **Gemini Web App** using Web Crypto HMAC-SHA256.
   3. **Cloudflare OIDC JWT / Userinfo Fallback**: Verifies RS256 signatures against Cloudflare Access JWKS (`verifyCloudflareOidcJwt`) and `/userinfo` with 5-minute edge caching (`caches.default`).
   4. **RFC 9728 `401` Challenge**: Unauthenticated requests to `/mcp` receive `HTTP 401` with `WWW-Authenticate: Bearer error="invalid_token", resource_metadata="https://brain.tsimon.me/.well-known/oauth-protected-resource", as_uri="https://brain.tsimon.me/.well-known/oauth-authorization-server"`.
-- **Alphabetical Tool Registration (`ADR-02` Compliance, [lines 32–252](file:///c:/Users/simon/Workspaces/gemini-brain/src/index.ts#L32-L252)):** Registers all **5 MCP Tools** in strict alphabetical order (`get_overnight_diff`, `hybrid_recall`, `log_decision`, `log_episodic_event`, `remember_fact`), **3 MCP Resources** (`brain://decisions/active`, `brain://telemetry/status`, `brain://audit/overnight`), and **2 MCP Prompts** (`checkpoint-session`, `hydrate-morning-session`).
+- **Alphabetical Tool Registration (`ADR-02` Compliance, [lines 34–330](file:///c:/Users/simon/Workspaces/gemini-brain/src/index.ts#L34-L330)):** Registers all **6 MCP Tools** in strict alphabetical order (`get_overnight_diff`, `hybrid_recall`, `log_decision`, `log_episodic_event`, `remember_fact`, `resolve_conflict`), **3 MCP Resources** (`brain://decisions/active`, `brain://telemetry/status`, `brain://audit/overnight`), and **2 MCP Prompts** (`checkpoint-session`, `hydrate-morning-session`).
 
 ---
 
 ### Module A2: [src/dashboard.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/dashboard.ts) — Cognitive NOC Web Dashboard & WAF-Safe Multiplexer
 
 - **WAF-Safe `/mcp` Multiplexing (`ADR-05`):**
-  - Serves the interactive HTML5/Canvas Cognitive NOC Dashboard at `GET /mcp?ui=1` (as well as `/dashboard`, `/ui`, and `/` in web browsers) and static `200 OK` SVG favicons at `/favicon.ico` so browser probes never trigger Cloudflare WAF 401 brute-force rules.
-  - Multiplexes all browser AJAX actions (`dashboard`, `recall`, `consolidate`, `reindex`, `rollback`) over `POST /mcp?noc=<action>` (`X-Brain-Noc-Action`), returning HTTP `200 OK` with `{ ok: false, authError }` on credential mismatch so Cloudflare Super Bot Fight Mode never locks out operator IPs with HTTP `403`.
+  - Serves the interactive HTML5/Canvas Cognitive NOC Dashboard at `GET /mcp?ui=1` (as well as `/dashboard`, `/ui`, and `/` in web browsers, matching `Accept: text/html`, `Sec-Fetch-Dest: document`, `Sec-Fetch-Mode: navigate`, `?ui=1`, or `?reset=1`) and static `200 OK` SVG favicons at `/favicon.ico` so browser probes never trigger Cloudflare WAF 401 brute-force rules.
+  - Multiplexes all browser AJAX actions (`dashboard`, `recall`, `consolidate`, `reindex`, `rollback`, `conflicts`, `audit_conflicts`, `resolve_conflict`) over `POST /mcp?noc=<action>` (`X-Brain-Noc-Action`), returning HTTP `200 OK` with `{ ok: false, authError }` on credential mismatch so Cloudflare Super Bot Fight Mode never locks out operator IPs with HTTP `403`.
 - **Dashboard Capabilities:**
-  - Live telemetry cards (active memories across all namespaces, ADRs, Knowledge Graph entities/edges, unconsolidated episodic logs, and next `07:00 UTC` alarm countdown).
+  - Live telemetry cards (active memories across all namespaces, ADRs, Knowledge Graph entities/edges, pending `memory_conflicts`, unconsolidated episodic logs, and next `07:00 UTC` alarm countdown).
   - Interactive force-directed Knowledge Graph canvas and filterable memory inspector.
+  - **Active Memory Governance & Semantic Contradiction Triage (`memory_conflicts`)** panel in Tab 3 with 1-click **`✓ Keep Existing`**, **`⚡ Supersede Old`**, **`🔀 Merge Both`**, and **`🔍 Run Contradiction Audit Now`** controls.
   - Overnight Mutation Diff viewer (`INSERT`, `UPDATE`, `DELETE`, `CONSOLIDATE`, `ROLLBACK`) with side-by-side before/after diffs and 1-click atomic rollback.
   - Interactive 4-Way Federated `hybrid_recall` + Cross-Encoder Rerank sandbox.
 
 ---
 
-### Module B: [src/schema.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/schema.ts) — Embedded SQLite Relational, FTS5 & Property Graph Schema
+### Module B: [src/schema.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/schema.ts) — Embedded SQLite Relational, FTS5, Property Graph & Governance Schema
 
-`SCHEMA_DDL` ([lines 7–118](file:///c:/Users/simon/Workspaces/gemini-brain/src/schema.ts#L7-L118)) provisions **5 relational tables**, **1 FTS5 virtual table**, **6 secondary indexes**, and **3 synchronization triggers** inside the Durable Object's local SQLite engine:
+`SCHEMA_DDL` ([lines 7–189](file:///c:/Users/simon/Workspaces/gemini-brain/src/schema.ts#L7-L189)) provisions **8 relational tables**, **1 FTS5 virtual table**, **9 secondary indexes**, and **3 synchronization triggers** inside the Durable Object's local SQLite engine:
 
 ```mermaid
 erDiagram
     memories ||--o| memories : "superseded_by"
     memories ||--o| memories_fts : "rowid trigger sync"
     memories ||--o{ edges : "evidence_memory_id"
+    memories ||--o{ memory_mutations : "memory_id"
+    memories ||--o{ memory_conflicts : "existing_memory_id / new_memory_id"
     entities ||--o{ edges : "source_entity"
     entities ||--o{ edges : "target_entity"
     decisions ||--o| decisions : "superseded_by"
+    consolidation_runs ||--o{ memory_conflicts : "run_id"
 
     memories {
         TEXT id PK "UUID or deterministic hash (py_*, md_*, qdrant_*)"
@@ -657,16 +679,54 @@ erDiagram
         INTEGER consolidated "0 = pending alarm, 1 = consolidated"
         INTEGER created_at "unixepoch()"
     }
+
+    memory_mutations {
+        INTEGER mutation_id PK "AUTOINCREMENT"
+        TEXT memory_id "Target memory ID"
+        TEXT namespace "DEFAULT 'global'"
+        TEXT operation "'INSERT'|'UPDATE'|'DELETE'|'CONSOLIDATE'|'ROLLBACK'"
+        TEXT client_id "Client attribution"
+        TEXT old_content "Prior version snapshot"
+        TEXT new_content "Updated version snapshot"
+        INTEGER rolled_back "0 = active, 1 = rolled back"
+        INTEGER created_at "unixepoch()"
+    }
+
+    consolidation_runs {
+        INTEGER run_id PK "AUTOINCREMENT"
+        TEXT digest_memory_id "Consolidated episodic_summary ID"
+        INTEGER events_count "Count of episodic_logs distilled"
+        TEXT trigger_source "'alarm_0300' | 'manual_cli' | 'dashboard_noc'"
+        INTEGER created_at "unixepoch()"
+    }
+
+    memory_conflicts {
+        INTEGER conflict_id PK "AUTOINCREMENT"
+        INTEGER run_id FK "Optional consolidation_runs.run_id"
+        TEXT namespace "DEFAULT 'global'"
+        TEXT conflict_type "'semantic_contradiction'|'triple_conflict'|'adr_drift'"
+        TEXT severity "'low'|'medium'|'high'"
+        TEXT existing_memory_id "Older active memory ID"
+        TEXT existing_edge_id "Older active KG edge ID"
+        TEXT existing_decision_id "Older active ADR ID"
+        TEXT new_memory_id "Newer digest or memory ID"
+        TEXT reason "LLM or structural explanation"
+        TEXT suggested_action "'keep'|'supersede'|'merge'"
+        TEXT status "'pending'|'resolved'"
+        TEXT resolution_action "'keep'|'supersede'|'merge'"
+        INTEGER created_at "unixepoch()"
+        INTEGER resolved_at "Resolution timestamp"
+    }
 ```
 
 #### Key SQL Mechanics in `src/schema.ts`:
 1. **FTS5 Tokenizer & Trigger Invariant ([lines 32–60](file:///c:/Users/simon/Workspaces/gemini-brain/src/schema.ts#L32-L60)):**
    - `memories_fts` uses `tokenize='porter unicode61 remove_diacritics 2'` for morphological stemming and accent insensitivity.
-   - `trg_memories_ai` (AFTER INSERT), `trg_memories_ad` (AFTER DELETE), and `trg_memories_au` (AFTER UPDATE) guarantee that **only active memories** (`NEW.superseded_by IS NULL`) exist in `memories_fts`. As soon as a memory is superseded, `trg_memories_au` deletes its `rowid` from `memories_fts` without re-inserting it.
-2. **Materialized Lexical Hybrid Query (`LEXICAL_HYBRID_SQL`, [lines 131–163](file:///c:/Users/simon/Workspaces/gemini-brain/src/schema.ts#L131-L163)):**
+   - `trg_memories_ai` (AFTER INSERT), `trg_memories_ad` (AFTER DELETE), and `trg_memories_au` (AFTER UPDATE) guarantee that **only active memories** (`NEW.superseded_by IS NULL`) exist in `memories_fts`. As soon as a memory is superseded (e.g., via `resolveMemoryConflict({ action: "supersede" })`), `trg_memories_au` deletes its `rowid` from `memories_fts` without re-inserting it.
+2. **Materialized Lexical Hybrid Query (`LEXICAL_HYBRID_SQL`, [lines 202–233](file:///c:/Users/simon/Workspaces/gemini-brain/src/schema.ts#L202-L233)):**
    - Uses a `WITH fts_matches AS MATERIALIZED` CTE to evaluate `bm25(memories_fts, 0.0, 0.0, 10.0, 1.0, 5.0)` once over the top 100 FTS hits (negating SQLite's negative BM25 output so higher values indicate stronger relevance, weighting `title` at `10.0`, `summary` at `5.0`, and `content` at `1.0`).
    - Joins against `memories` filtered by `(?2 = 'global' OR m.namespace = ?2 OR m.namespace = 'global') AND m.superseded_by IS NULL` and computes exponential recency decay `EXP(-0.693147 * MAX(0, (?3 - m.updated_at)) / ?4)`.
-3. **1-Hop Knowledge Graph Subgraph Expansion (`GRAPH_EXPANSION_SQL`, [lines 175–212](file:///c:/Users/simon/Workspaces/gemini-brain/src/schema.ts#L175-L212)):**
+3. **1-Hop Knowledge Graph Subgraph Expansion (`GRAPH_EXPANSION_SQL`, [lines 246–283](file:///c:/Users/simon/Workspaces/gemini-brain/src/schema.ts#L246-L283)):**
    - Builds a `seed_entities` CTE combining:
      - All `source_entity` and `target_entity` IDs linked to the top recalled `evidence_memory_id`s (`WHERE valid_until IS NULL`).
      - Any `entity_id` or `LOWER(canonical_name)` matching tokenized query terms (`length > 2`).
@@ -674,18 +734,20 @@ erDiagram
 
 ---
 
-### Module C: [src/memory-do.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts) — `BrainMemoryDO` Stateful Durable Object & Alarm Engine
+### Module C: [src/memory-do.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts) — `BrainMemoryDO` Stateful Durable Object, Governance Watchdog & Alarm Engine
 
 `BrainMemoryDO` extends `DurableObject<Env>` and encapsulates all transactional state and scheduled background execution:
 
 | Method | Lines | Technical Execution Details |
 | :--- | :--- | :--- |
-| `constructor(ctx, env)` | [L82–L93](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L82-L93) | Wraps `this.sql.exec(SCHEMA_DDL)` inside `ctx.blockConcurrencyWhile()` and `ctx.storage.transactionSync()` so schema migrations complete atomically before any RPC call is serviced, then invokes `ensureAlarmScheduled()`. |
-| `rememberFact(input)` | [L125–L252](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L125-L252) | 1. Calls `env.AI.run("@cf/baai/bge-m3", { text: [title + "\n" + content] })` to generate a `1024-dim` float vector.<br/>2. Inside `ctx.storage.transactionSync()`, executes `INSERT INTO memories ... ON CONFLICT(id) DO UPDATE`, then iterates over `input.triples` to upsert `entities` (both subject and object) and `edges` (`edgeId = subjectId\|relation\|objectId`, resetting `valid_until = NULL`).<br/>3. Calls `env.VECTOR_INDEX.upsert()` with the `1024-dim` vector and metadata `{ namespace, title, memory_type }`. |
-| `hybridRecall(params)` | [L261–L484](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L261-L484) | 1. Concurrently launches: (a) `@cf/baai/bge-m3` `1024-dim` query embedding, (b) `queryKbArchive()` (which itself runs D1 `kb_fts` + `@cf/baai/bge-base-en-v1.5` `768-dim` Vectorize in parallel), and (c) synchronous local SQLite `LEXICAL_HYBRID_SQL`.<br/>2. Queries `env.VECTOR_INDEX` (`gemini-brain-bge-m3`). When a specific namespace (e.g., `homelab`) is requested, queries **both** that namespace (`topK`) and `global` (`max(5, floor(topK/2))`) in parallel and deduplicates by ID.<br/>3. Hydrates any vector-only Brain matches missing from the FTS5 result set via `SELECT ... FROM memories WHERE id IN (SELECT value FROM json_each(?1)) AND superseded_by IS NULL`.<br/>4. Selects up to 10 seed Brain IDs (`top 6 FTS ∪ top 6 Vec`), executes `GRAPH_EXPANSION_SQL` (limit 15 triples), and performs **synaptic reinforcement** (`UPDATE memories SET access_count = access_count + 1, last_accessed_at = ?2`).<br/>5. Fetches up to 5 active ADRs from `decisions` and passes all signals to `fuseBrainAndKb()`. |
-| `logDecision(input)` | [L489–L524](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L489-L524) | Generates `decisionId = adr_<8-hex-chars>`, inserts the active ADR into `decisions`, and if `supersedesDecisionId` is provided, atomically updates the older record to `status = 'superseded', superseded_by = decisionId`. |
-| `logEpisodicEvent(input)` | [L529–L555](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L529-L555) | Inserts raw session telemetry into `episodic_logs` (`consolidated = 0`) with `RETURNING log_id` and verifies the next `07:00 UTC` alarm is scheduled. |
-| `alarm()` | [L651–L719](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L651-L719) | Queries up to 100 unconsolidated rows (`WHERE consolidated = 0 ORDER BY created_at ASC LIMIT 100`), invokes `@cf/meta/llama-3.3-70b-instruct-fp8-fast` (`max_tokens: 1024, temperature: 0.2`), persists the resulting digest via `this.rememberFact({ memoryType: "episodic_summary", importance: 0.75 })`, marks the batch `consolidated = 1`, recomputes `entities.pagerank_score`, and reschedules `setAlarm(getNext0700UtcMs())` inside a `finally` block so the schedule never breaks even on transient AI errors. |
+| `constructor(ctx, env)` | [L239–L251](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L239-L251) | Wraps `this.sql.exec(SCHEMA_DDL)` inside `ctx.blockConcurrencyWhile()` and `ctx.storage.transactionSync()` so schema migrations complete atomically before any RPC call is serviced, then invokes `ensureAlarmScheduled()`. |
+| `rememberFact(input)` & `rememberFactsBatch(inputs)` | [L283–L632](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L283-L632) | 1. Calls `env.AI.run("@cf/baai/bge-m3", { text: [...] })` to generate `1024-dim` float vectors.<br/>2. Inside `ctx.storage.transactionSync()`, executes `INSERT INTO memories ... ON CONFLICT(id) DO UPDATE`, logs before/after snapshots in `memory_mutations`, checks functional Knowledge Graph relations (`FUNCTIONAL_RELATIONS`) for conflicting active targets to stage `triple_conflict` rows in `memory_conflicts`, and upserts `entities` + `edges`.<br/>3. Calls `env.VECTOR_INDEX.upsert()` with the `1024-dim` vectors. |
+| `hybridRecall(params)` | [L641–L879](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L641-L879) | 1. Concurrently launches: (a) `@cf/baai/bge-m3` `1024-dim` query embedding, (b) `queryKbArchive()` (D1 `kb_fts` + `@cf/baai/bge-base-en-v1.5` `768-dim` Vectorize in parallel), and (c) synchronous local SQLite `LEXICAL_HYBRID_SQL`.<br/>2. Queries `env.VECTOR_INDEX` (`gemini-brain-bge-m3`) across target namespace + `global` and hydrates vector-only matches where `superseded_by IS NULL`.<br/>3. Expands 1-hop KG triples (`GRAPH_EXPANSION_SQL`), increments `access_count` (synaptic reinforcement), fetches active ADRs, and runs `fuseBrainAndKb()` (4-way RRF + Stage-2 Cross-Encoder Neural Reranking via `@cf/baai/bge-reranker-base`). |
+| `logDecision(input)` | [L884–L920](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L884-L920) | Generates `decisionId = adr_<8-hex-chars>`, inserts the active ADR into `decisions`, and if `supersedesDecisionId` is provided, atomically updates the older record to `status = 'superseded', superseded_by = decisionId`. |
+| `logEpisodicEvent(input)` | [L925–L951](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L925-L951) | Inserts raw session telemetry into `episodic_logs` (`consolidated = 0`) with `RETURNING log_id` and verifies the next `07:00 UTC` alarm is scheduled. |
+| `auditContradictionsNow(params)` | [L1764–L2024](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L1764-L2024) | Executes dual-stage contradiction triage: (1) scans active `edges` for conflicting targets on functional relations, and (2) retrieves top candidate older memories (`LEXICAL_HYBRID_SQL`) + active ADRs and prompts `@cf/meta/llama-3.3-70b-instruct-fp8-fast` (`temp=0.1`) to output a strict JSON array of genuine contradictions, staging them into `memory_conflicts` while enforcing `isProtectedInfrastructure()` for `node:rpi5` and `service:rpi5-qdrant-knowledge-hub`. |
+| `resolveMemoryConflict(params)` | [L2029–L2277](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L2029-L2277) | Executes 15-second `keep` / `supersede` / `merge` decisions: `supersede` sets `memories.superseded_by = newId` (purging `memories_fts` via `trg_memories_au`), deletes the stale 1024-dim vector from `VECTOR_INDEX` (`deleteByIds`), sets `edges.valid_until = now`, and logs a reversible snapshot in `memory_mutations`; `merge` synthesizes both records and re-embeds. |
+| `alarm()` & `runConsolidationNow()` | [L1591–L1711](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts#L1591-L1711) | Queries up to 100 unconsolidated rows (`WHERE consolidated = 0 ORDER BY created_at ASC LIMIT 100`), invokes `@cf/meta/llama-3.3-70b-instruct-fp8-fast` (`max_tokens: 1024, temperature: 0.2`), persists the resulting digest via `this.rememberFact({ memoryType: "episodic_summary", importance: 0.75 })`, marks the batch `consolidated = 1`, recomputes `entities.pagerank_score`, executes `auditContradictionsNow()`, and reschedules `setAlarm(getNext0700UtcMs())` inside a `finally` block. |
 
 ---
 
@@ -830,7 +892,7 @@ sequenceDiagram
 
 ---
 
-### Workflow 3: Nocturnal `07:00 UTC` Consolidation Alarm (`alarm()`)
+### Workflow 3: Nocturnal `07:00 UTC` Consolidation & Contradiction Triage Alarm (`alarm()`)
 
 ```mermaid
 stateDiagram-v2
@@ -839,7 +901,7 @@ stateDiagram-v2
     Waking --> CheckLogs: SELECT * FROM episodic_logs WHERE consolidated = 0 LIMIT 100
 
     state CheckLogs <<choice>>
-    CheckLogs --> Reschedule: 0 Unconsolidated Logs
+    CheckLogs --> AuditContradictions: 0 Unconsolidated Logs (Audit Recent Mutations)
     CheckLogs --> Synthesize: 1..100 Unconsolidated Logs Found
 
     Synthesize --> PersistDigest: Workers AI (@cf/meta/llama-3.3-70b-instruct-fp8-fast)<br/>Generates Structured Daily Digest (temp=0.2, max_tokens=1024)
@@ -851,8 +913,9 @@ stateDiagram-v2
         RecomputePageRank --> [*]
     }
 
-    AtomicGraphUpdate --> Reschedule: finally {} block guarantees alarm continuity
-    Reschedule --> Sleeping: ctx.storage.setAlarm(getNext0700UtcMs())
+    AtomicGraphUpdate --> AuditContradictions: auditContradictionsNow()
+    AuditContradictions --> Reschedule: Stages triple_conflict & semantic_contradiction rows in memory_conflicts
+    Reschedule --> Sleeping: finally { ctx.storage.setAlarm(getNext0700UtcMs()) }
 ```
 
 ---
@@ -1013,7 +1076,7 @@ Register the server in `C:\Users\simon\.gemini\settings.json` and `C:\Users\simo
 
 | Binding / Variable | Resource Type | Target Identifier / Model | Purpose |
 | :--- | :--- | :--- | :--- |
-| `BRAIN_DO` | Durable Object (`new_sqlite_classes`) | `BrainMemoryDO` (Migration tag: `v1`) | Strongly consistent single-threaded actor with embedded SQLite (`memories`, `memories_fts`, `entities`, `edges`, `decisions`, `episodic_logs`, `memory_mutations`, `consolidation_runs`) and `alarm()` scheduler. |
+| `BRAIN_DO` | Durable Object (`new_sqlite_classes`) | `BrainMemoryDO` (Migration tag: `v1`) | Strongly consistent single-threaded actor with embedded SQLite (`memories`, `memories_fts`, `entities`, `edges`, `decisions`, `episodic_logs`, `memory_mutations`, `consolidation_runs`, `memory_conflicts`) and `alarm()` scheduler. |
 | `VECTOR_INDEX` | Cloudflare Vectorize | `gemini-brain-bge-m3` (`1024` dimensions, `cosine`) | Primary semantic vector index for `BrainMemoryDO` memories, partitioned by `namespace`. |
 | `KB_DB` | Cloudflare D1 Database | `archive-knowledge-db` (`c0734505-169c-4997-a603-8b3c9d06cab0`) | Federated archive database containing `kb_fts` across 14,422+ documents, emails, spreadsheets, scripts, and CMDB records. |
 | `KB_VECTORIZE` | Cloudflare Vectorize | `archive-kb-index` (`768` dimensions, `cosine`) | Federated semantic vector index for `kb.tsimon.me` archive chunks. |

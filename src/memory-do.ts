@@ -111,6 +111,52 @@ export type ConsolidationRunRow = {
   created_at: number;
 };
 
+export type MemoryConflictRow = {
+  conflict_id: number;
+  run_id: number | null;
+  namespace: string;
+  conflict_type: "semantic_contradiction" | "triple_conflict" | "adr_drift";
+  severity: "low" | "medium" | "high";
+  existing_memory_id: string | null;
+  existing_title: string | null;
+  existing_snippet: string | null;
+  existing_edge_id: string | null;
+  existing_decision_id: string | null;
+  new_memory_id: string | null;
+  new_title: string | null;
+  new_snippet: string | null;
+  new_edge_id: string | null;
+  reason: string;
+  suggested_action: "keep" | "supersede" | "merge";
+  merged_content_proposal: string | null;
+  status: "pending" | "resolved";
+  resolution_action: "keep" | "supersede" | "merge" | null;
+  resolved_by: string | null;
+  created_at: number;
+  resolved_at: number | null;
+};
+
+export interface GetConflictsParams {
+  status?: "pending" | "resolved" | "all";
+  namespace?: string;
+  limit?: number;
+}
+
+export interface ResolveConflictParams {
+  conflictId: number;
+  action: "keep" | "supersede" | "merge";
+  mergedContent?: string;
+  clientId?: string;
+}
+
+export interface AuditContradictionsParams {
+  memoryId?: string;
+  runId?: number | null;
+  hours?: number;
+  namespace?: string;
+  limit?: number;
+}
+
 export interface OvernightDiffParams {
   hours?: number;
   clientId?: string;
@@ -139,6 +185,34 @@ export interface ReindexMemoriesParams {
   hours?: number;
   rebuildFts?: boolean;
   limit?: number;
+}
+
+const FUNCTIONAL_RELATIONS = new Set([
+  "ROUTES_TO",
+  "RUNS_ON",
+  "HOSTED_ON",
+  "USES_MODEL",
+  "GOVERNED_BY",
+  "LISTENS_ON",
+  "PORT",
+  "VERSION",
+  "STATUS",
+  "PRIMARY_DB",
+  "REPLACES"
+]);
+
+/**
+ * Safety guardrail: Protects Raspberry Pi 5 (node:rpi5) and Qdrant (service:rpi5-qdrant-knowledge-hub)
+ * Knowledge Graph edges and active memories from automatic deprecation during contradiction triage.
+ */
+function isProtectedInfrastructure(value?: string | null): boolean {
+  if (!value) return false;
+  const lower = value.toLowerCase();
+  return (
+    lower.includes("node:rpi5") ||
+    lower.includes("service:rpi5-qdrant-knowledge-hub") ||
+    lower.includes("rpi5-qdrant")
+  );
 }
 
 function inferClientId(
@@ -434,6 +508,80 @@ export class BrainMemoryDO extends DurableObject<Env> {
           );
 
           const edgeId = `${t.subjectId}|${t.relation}|${t.objectId}`;
+          const normRel = t.relation.trim().toUpperCase();
+
+          // Detect conflicting active Knowledge Graph triples on functional single-target relations
+          if (FUNCTIONAL_RELATIONS.has(normRel) && !isProtectedInfrastructure(edgeId)) {
+            const conflictingEdges = this.sql
+              .exec<{
+                edge_id: string;
+                target_entity: string;
+                evidence_memory_id: string | null;
+              }>(
+                `SELECT edge_id, target_entity, evidence_memory_id
+                 FROM edges
+                 WHERE source_entity = ?1
+                   AND relation = ?2
+                   AND target_entity != ?3
+                   AND valid_until IS NULL`,
+                t.subjectId,
+                t.relation,
+                t.objectId
+              )
+              .toArray();
+
+            for (const ce of conflictingEdges) {
+              if (isProtectedInfrastructure(ce.edge_id)) continue;
+              const alreadyFlagged = this.sql
+                .exec<{ cnt: number }>(
+                  `SELECT COUNT(*) AS cnt
+                   FROM memory_conflicts
+                   WHERE existing_edge_id = ?1
+                     AND new_edge_id = ?2
+                     AND status = 'pending'`,
+                  ce.edge_id,
+                  edgeId
+                )
+                .one().cnt;
+
+              if (alreadyFlagged === 0) {
+                const oldMemRow = ce.evidence_memory_id
+                  ? this.sql
+                      .exec<{ title: string; summary: string | null; content: string }>(
+                        `SELECT title, summary, content FROM memories WHERE id = ?1`,
+                        ce.evidence_memory_id
+                      )
+                      .toArray()[0]
+                  : undefined;
+
+                this.sql.exec(
+                  `INSERT INTO memory_conflicts (
+                     run_id, namespace, conflict_type, severity,
+                     existing_memory_id, existing_title, existing_snippet, existing_edge_id,
+                     new_memory_id, new_title, new_snippet, new_edge_id,
+                     reason, suggested_action, merged_content_proposal, status, created_at
+                   ) VALUES (
+                     NULL, ?1, 'triple_conflict', 'medium',
+                     ?2, ?3, ?4, ?5,
+                     ?6, ?7, ?8, ?9,
+                     ?10, 'supersede', NULL, 'pending', ?11
+                   )`,
+                  p.namespace,
+                  ce.evidence_memory_id,
+                  oldMemRow?.title || ce.edge_id,
+                  (oldMemRow?.summary || oldMemRow?.content || `Triple: ${ce.edge_id}`).slice(0, 280),
+                  ce.edge_id,
+                  p.id,
+                  p.title,
+                  (p.summary || p.content).slice(0, 280),
+                  edgeId,
+                  `Entity '${t.subjectId}' relation '${t.relation}' shifted target from '${ce.target_entity}' to '${t.objectId}'.`,
+                  now
+                );
+              }
+            }
+          }
+
           this.sql.exec(
             `INSERT INTO edges (
               edge_id, namespace, source_entity, relation, target_entity, evidence_memory_id, valid_from
@@ -851,6 +999,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
     activeEntities: number;
     activeEdges: number;
     pendingEpisodicLogs: number;
+    pendingConflicts: number;
     nextAlarmIso: string | null;
     byNamespace: {
       memories: Record<string, number>;
@@ -913,6 +1062,17 @@ export class BrainMemoryDO extends DurableObject<Env> {
       )
       .one().count;
 
+    const pendingConflicts = this.sql
+      .exec<{ count: number }>(
+        `SELECT COUNT(*) AS count
+         FROM memory_conflicts
+         WHERE status = 'pending'
+           AND (?2 = 1 OR namespace = ?1 OR namespace = 'global')`,
+        scope,
+        matchAll
+      )
+      .one().count;
+
     const memByNsRows = this.sql
       .exec<{ namespace: string; count: number }>(
         `SELECT namespace, COUNT(*) AS count
@@ -969,6 +1129,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
       activeEntities,
       activeEdges,
       pendingEpisodicLogs,
+      pendingConflicts,
       nextAlarmIso: nextAlarmMs !== null ? new Date(nextAlarmMs).toISOString() : null,
       byNamespace: {
         memories: toRecord(memByNsRows),
@@ -980,7 +1141,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
   }
 
   /**
-   * RPC Method 7: Query Overnight Mutations, Before/After Diffs & Morning Session Hydration Context
+   * RPC Method 7: Query Overnight Mutations, Before/After Diffs, Pending Conflicts & Morning Session Hydration Context
    */
   async getOvernightDiff(params: OvernightDiffParams = {}): Promise<{
     windowHours: number;
@@ -994,8 +1155,11 @@ export class BrainMemoryDO extends DurableObject<Env> {
       decisionsAdded: number;
       episodicEventsLogged: number;
       episodicPending: number;
+      conflictsPending: number;
+      conflictsResolved: number;
       nextAlarmIso: string | null;
     };
+    conflicts: MemoryConflictRow[];
     mutations: MutationAuditRow[];
     decisions: Array<ActiveDecisionRow & { namespace: string; status: string }>;
     consolidations: ConsolidationRunRow[];
@@ -1115,7 +1279,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
       byNamespace[m.namespace] = (byNamespace[m.namespace] || 0) + 1;
     }
 
-    // 4. Fetch decisions & consolidations in the window
+    // 4. Fetch decisions, consolidations & governance conflicts
     const decisions = this.sql
       .exec<ActiveDecisionRow & { namespace: string; status: string }>(
         `SELECT decision_id, namespace, title, decision, rationale, status, created_at
@@ -1142,6 +1306,27 @@ export class BrainMemoryDO extends DurableObject<Env> {
       )
       .toArray();
 
+    const conflicts = this.sql
+      .exec<MemoryConflictRow>(
+        `SELECT
+           conflict_id, run_id, namespace, conflict_type, severity,
+           existing_memory_id, existing_title, existing_snippet, existing_edge_id, existing_decision_id,
+           new_memory_id, new_title, new_snippet, new_edge_id,
+           reason, suggested_action, merged_content_proposal,
+           status, resolution_action, resolved_by, created_at, resolved_at
+         FROM memory_conflicts
+         WHERE (status = 'pending' OR created_at >= ?1 OR resolved_at >= ?1)
+           AND (?2 = '' OR namespace = ?2)
+         ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END ASC, created_at DESC
+         LIMIT 30`,
+        sinceUnix,
+        nsFilter
+      )
+      .toArray();
+
+    const pendingConflicts = conflicts.filter((c) => c.status === "pending");
+    const resolvedConflicts = conflicts.filter((c) => c.status === "resolved");
+
     const episodicLoggedCount = this.sql
       .exec<{ count: number }>(
         `SELECT COUNT(*) AS count FROM episodic_logs WHERE created_at >= ?1`,
@@ -1161,7 +1346,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
 
     // 5. Build token-efficient Morning Hydration Markdown Block for Gemini / VS Code / Antigravity
     const mdLines: string[] = [
-      `<overnight_brain_diff window_hours="${windowHours}" since="${sinceIso}" total_mutations="${rawMutations.length}" decisions_added="${decisions.length}" episodic_pending="${episodicPendingCount}">`,
+      `<overnight_brain_diff window_hours="${windowHours}" since="${sinceIso}" total_mutations="${rawMutations.length}" decisions_added="${decisions.length}" episodic_pending="${episodicPendingCount}" conflicts_pending="${pendingConflicts.length}">`,
       `### Overnight Brain State Summary (Last ${windowHours}h)`,
       `- **Window**: \`${sinceIso}\` -> \`${new Date(now * 1000).toISOString()}\``,
       `- **Mutations**: ${rawMutations.length} (${Object.entries(byOperation)
@@ -1173,8 +1358,24 @@ export class BrainMemoryDO extends DurableObject<Env> {
       `- **By Namespace**: ${Object.entries(byNamespace)
         .map(([k, v]) => `\`${k}\` (${v})`)
         .join(", ") || "none"}`,
+      `- **Governance Watchdog**: ${pendingConflicts.length} pending conflict(s) | ${resolvedConflicts.length} resolved in window`,
       `- **Episodic Buffer**: ${episodicLoggedCount} logged in window | ${episodicPendingCount} pending consolidation | Next 03:00 AM alarm: \`${nextAlarmIso || "unscheduled"}\``
     ];
+
+    if (pendingConflicts.length > 0) {
+      mdLines.push(`\n### ⚠️ Pending Semantic Contradictions (15s Triage Required: keep | supersede | merge)`);
+      for (const c of pendingConflicts) {
+        const oldRef = c.existing_memory_id || c.existing_edge_id || c.existing_decision_id || "unknown";
+        const newRef = c.new_memory_id || c.new_edge_id || "latest";
+        mdLines.push(
+          `- **[Conflict #${c.conflict_id}] (${c.severity.toUpperCase()} | ${c.conflict_type})** \`[${c.namespace}]\` — Recommended: **\`${c.suggested_action}\`**`,
+          `  - **Why Flagged**: ${c.reason}`,
+          `  - **Existing (\`${oldRef}\`)**: ${c.existing_title || oldRef} — _${(c.existing_snippet || "").replace(/\s+/g, " ").slice(0, 180)}_`,
+          `  - **New (\`${newRef}\`)**: ${c.new_title || newRef} — _${(c.new_snippet || "").replace(/\s+/g, " ").slice(0, 180)}_`,
+          `  - **Triage Action**: Call MCP \`resolve_conflict\` with \`{ "conflictId": ${c.conflict_id}, "action": "${c.suggested_action}" }\` or run \`python brain_monitor.py triage\``
+        );
+      }
+    }
 
     if (consolidations.length > 0) {
       mdLines.push(`\n### Nocturnal Consolidation Digests`);
@@ -1225,8 +1426,11 @@ export class BrainMemoryDO extends DurableObject<Env> {
         decisionsAdded: decisions.length,
         episodicEventsLogged: episodicLoggedCount,
         episodicPending: episodicPendingCount,
+        conflictsPending: pendingConflicts.length,
+        conflictsResolved: resolvedConflicts.length,
         nextAlarmIso
       },
+      conflicts,
       mutations: rawMutations,
       decisions,
       consolidations,
@@ -1328,6 +1532,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
 
   /**
    * RPC Method 9: Execute Nocturnal Consolidation Immediately (or via 03:00 AM Alarm)
+   *               + Active Memory Governance & Semantic Contradiction Triage
    */
   async runConsolidationNow(triggerSource = "manual_cli"): Promise<{
     consolidatedCount: number;
@@ -1335,6 +1540,8 @@ export class BrainMemoryDO extends DurableObject<Env> {
     digestMemoryId: string | null;
     digestTitle: string | null;
     digestContent: string | null;
+    conflictsDetected: number;
+    pendingConflictsCount: number;
     nextAlarmIso: string | null;
   }> {
     const rows = this.sql
@@ -1348,6 +1555,8 @@ export class BrainMemoryDO extends DurableObject<Env> {
       .toArray();
 
     if (rows.length === 0) {
+      // Even when 0 raw episodic logs are pending, run a lightweight contradiction audit on recent mutations
+      const auditRes = await this.auditContradictionsNow({ hours: 24, limit: 3 });
       const nextMs = await this.ensureAlarmScheduled();
       return {
         consolidatedCount: 0,
@@ -1355,6 +1564,8 @@ export class BrainMemoryDO extends DurableObject<Env> {
         digestMemoryId: null,
         digestTitle: null,
         digestContent: null,
+        conflictsDetected: auditRes.detectedCount,
+        pendingConflictsCount: auditRes.pendingCount,
         nextAlarmIso: new Date(nextMs).toISOString()
       };
     }
@@ -1437,6 +1648,14 @@ export class BrainMemoryDO extends DurableObject<Env> {
       runId = runRow.run_id;
     });
 
+    // Execute Active Memory Governance & Semantic Contradiction Triage against existing semantic memories/triples/ADRs
+    const auditRes = await this.auditContradictionsNow({
+      memoryId: saved.id,
+      runId,
+      hours: 24,
+      limit: 4
+    });
+
     const nextMs = await this.ensureAlarmScheduled();
     return {
       consolidatedCount: rows.length,
@@ -1444,7 +1663,724 @@ export class BrainMemoryDO extends DurableObject<Env> {
       digestMemoryId: saved.id,
       digestTitle,
       digestContent: digest,
+      conflictsDetected: auditRes.detectedCount,
+      pendingConflictsCount: auditRes.pendingCount,
       nextAlarmIso: new Date(nextMs).toISOString()
+    };
+  }
+
+  /**
+   * RPC Method 9B: Retrieve Memory Conflicts Queue (Pending or Resolved)
+   */
+  async getMemoryConflicts(params: GetConflictsParams = {}): Promise<{
+    pendingCount: number;
+    resolvedCount: number;
+    conflicts: MemoryConflictRow[];
+  }> {
+    const statusFilter = (params.status || "all").toLowerCase();
+    const nsFilter = (params.namespace || "").trim();
+    const limit = Math.max(1, Math.min(200, params.limit ?? 50));
+
+    const pendingCount = this.sql
+      .exec<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM memory_conflicts WHERE status = 'pending'`
+      )
+      .one().count;
+
+    const resolvedCount = this.sql
+      .exec<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM memory_conflicts WHERE status = 'resolved'`
+      )
+      .one().count;
+
+    const conflicts = this.sql
+      .exec<MemoryConflictRow>(
+        `SELECT
+           conflict_id, run_id, namespace, conflict_type, severity,
+           existing_memory_id, existing_title, existing_snippet, existing_edge_id, existing_decision_id,
+           new_memory_id, new_title, new_snippet, new_edge_id,
+           reason, suggested_action, merged_content_proposal,
+           status, resolution_action, resolved_by, created_at, resolved_at
+         FROM memory_conflicts
+         WHERE (?1 = 'all' OR status = ?1)
+           AND (?2 = '' OR namespace = ?2)
+         ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END ASC, created_at DESC
+         LIMIT ?3`,
+        statusFilter,
+        nsFilter,
+        limit
+      )
+      .toArray();
+
+    return {
+      pendingCount,
+      resolvedCount,
+      conflicts
+    };
+  }
+
+  /**
+   * RPC Method 9C: Active Memory Governance & Semantic Contradiction Auditor
+   *                Compares newly consolidated digests or recent facts against existing active memories,
+   *                Knowledge Graph triples, and ADRs using deterministic KG checks + Llama 3.3 70B triage.
+   */
+  async auditContradictionsNow(params: AuditContradictionsParams = {}): Promise<{
+    ok: boolean;
+    auditedMemoriesCount: number;
+    detectedCount: number;
+    pendingCount: number;
+    newConflicts: MemoryConflictRow[];
+    pendingConflicts: MemoryConflictRow[];
+  }> {
+    const now = Math.floor(Date.now() / 1000);
+    const hours = Math.max(1, Math.min(720, params.hours ?? 24));
+    const sinceUnix = now - Math.floor(hours * 3600);
+    const nsFilter = (params.namespace || "").trim();
+    const limit = Math.max(1, Math.min(10, params.limit ?? 4));
+    const runId = params.runId ?? null;
+    const newlyInsertedIds: number[] = [];
+
+    // Stage 1: Deterministic Knowledge Graph Triple Contradiction Check across active edges
+    const duplicateRelationGroups = this.sql
+      .exec<{
+        source_entity: string;
+        relation: string;
+        cnt: number;
+      }>(
+        `SELECT source_entity, relation, COUNT(*) AS cnt
+         FROM edges
+         WHERE valid_until IS NULL
+         GROUP BY source_entity, relation
+         HAVING COUNT(*) > 1`
+      )
+      .toArray();
+
+    for (const grp of duplicateRelationGroups) {
+      if (!FUNCTIONAL_RELATIONS.has(grp.relation.trim().toUpperCase())) continue;
+      if (isProtectedInfrastructure(grp.source_entity)) continue;
+
+      const edgeRows = this.sql
+        .exec<{
+          edge_id: string;
+          namespace: string;
+          target_entity: string;
+          evidence_memory_id: string | null;
+          valid_from: number;
+        }>(
+          `SELECT edge_id, namespace, target_entity, evidence_memory_id, valid_from
+           FROM edges
+           WHERE source_entity = ?1
+             AND relation = ?2
+             AND valid_until IS NULL
+           ORDER BY valid_from DESC`,
+          grp.source_entity,
+          grp.relation
+        )
+        .toArray();
+
+      if (edgeRows.length < 2) continue;
+      const newestEdge = edgeRows[0];
+      for (let i = 1; i < edgeRows.length; i++) {
+        const olderEdge = edgeRows[i];
+        if (isProtectedInfrastructure(olderEdge.edge_id)) continue;
+        if (olderEdge.target_entity === newestEdge.target_entity) continue;
+
+        const exists = this.sql
+          .exec<{ cnt: number }>(
+            `SELECT COUNT(*) AS cnt
+             FROM memory_conflicts
+             WHERE existing_edge_id = ?1
+               AND new_edge_id = ?2`,
+            olderEdge.edge_id,
+            newestEdge.edge_id
+          )
+          .one().cnt;
+
+        if (exists === 0) {
+          const ins = this.sql
+            .exec<{ conflict_id: number }>(
+              `INSERT INTO memory_conflicts (
+                 run_id, namespace, conflict_type, severity,
+                 existing_memory_id, existing_title, existing_snippet, existing_edge_id,
+                 new_memory_id, new_title, new_snippet, new_edge_id,
+                 reason, suggested_action, merged_content_proposal, status, created_at
+               ) VALUES (
+                 ?1, ?2, 'triple_conflict', 'medium',
+                 ?3, ?4, ?5, ?6,
+                 ?7, ?8, ?9, ?10,
+                 ?11, 'supersede', NULL, 'pending', ?12
+               )
+               RETURNING conflict_id`,
+              runId,
+              newestEdge.namespace || "global",
+              olderEdge.evidence_memory_id,
+              olderEdge.edge_id,
+              `Active KG Triple: ${grp.source_entity} -[${grp.relation}]-> ${olderEdge.target_entity}`,
+              olderEdge.edge_id,
+              newestEdge.evidence_memory_id,
+              newestEdge.edge_id,
+              `New KG Triple: ${grp.source_entity} -[${grp.relation}]-> ${newestEdge.target_entity}`,
+              newestEdge.edge_id,
+              `Single-valued relation '${grp.relation}' on '${grp.source_entity}' has conflicting active targets: '${olderEdge.target_entity}' vs '${newestEdge.target_entity}'.`,
+              now
+            )
+            .one();
+          newlyInsertedIds.push(ins.conflict_id);
+        }
+      }
+    }
+
+    // Stage 2: LLM Semantic Contradiction Check comparing recent/target memories against older active memories & ADRs
+    const targetMemories = params.memoryId
+      ? this.sql
+          .exec<{
+            id: string;
+            namespace: string;
+            memory_type: string;
+            title: string;
+            content: string;
+            summary: string | null;
+            updated_at: number;
+          }>(
+            `SELECT id, namespace, memory_type, title, content, summary, updated_at
+             FROM memories
+             WHERE id = ?1
+               AND superseded_by IS NULL`,
+            params.memoryId
+          )
+          .toArray()
+      : this.sql
+          .exec<{
+            id: string;
+            namespace: string;
+            memory_type: string;
+            title: string;
+            content: string;
+            summary: string | null;
+            updated_at: number;
+          }>(
+            `SELECT id, namespace, memory_type, title, content, summary, updated_at
+             FROM memories
+             WHERE updated_at >= ?1
+               AND (?2 = '' OR namespace = ?2)
+               AND superseded_by IS NULL
+             ORDER BY updated_at DESC
+             LIMIT ?3`,
+            sinceUnix,
+            nsFilter,
+            limit
+          )
+          .toArray();
+
+    for (const newMem of targetMemories) {
+      const ftsQuery = buildSafeFts5Query(`${newMem.title} ${(newMem.summary || newMem.content).slice(0, 260)}`);
+      if (ftsQuery === '""') continue;
+
+      const candidateOlderMemories = this.sql
+        .exec<
+          MemoryRecord & {
+            raw_bm25: number;
+            recency_decay: number;
+            lexical_rank: number;
+          }
+        >(LEXICAL_HYBRID_SQL, ftsQuery, newMem.namespace, now, 30 * 86400, 10)
+        .toArray()
+        .filter(
+          (m) =>
+            m.id !== newMem.id &&
+            !isProtectedInfrastructure(m.id) &&
+            !isProtectedInfrastructure(m.title)
+        )
+        .slice(0, 6);
+
+      const candidateAdrs = this.sql
+        .exec<ActiveDecisionRow>(
+          `SELECT decision_id, namespace, title, decision, rationale, created_at
+           FROM decisions
+           WHERE (?1 = 'global' OR namespace = ?1 OR namespace = 'global')
+             AND status = 'active'
+           ORDER BY created_at DESC
+           LIMIT 6`,
+          newMem.namespace
+        )
+        .toArray();
+
+      if (candidateOlderMemories.length === 0 && candidateAdrs.length === 0) {
+        continue;
+      }
+
+      const existingBlock = candidateOlderMemories
+        .map(
+          (m) =>
+            `[EXISTING_MEMORY id="${m.id}" namespace="${m.namespace}" updated_at="${new Date(m.updated_at * 1000).toISOString().slice(0, 10)}"]\nTitle: ${m.title}\nContent: ${m.content.slice(0, 700)}`
+        )
+        .join("\n\n");
+
+      const adrBlock = candidateAdrs
+        .map(
+          (a) =>
+            `[EXISTING_ADR decision_id="${a.decision_id}" namespace="${a.namespace || "global"}"]\nTitle: ${a.title}\nDecision: ${a.decision}`
+        )
+        .join("\n\n");
+
+      try {
+        const aiRes = (await this.env.AI.run(
+          "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as never,
+          {
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are an Active Memory Governance Auditor for a software architect's knowledge base. " +
+                  "Compare the NEW_MEMORY against the EXISTING_MEMORY and EXISTING_ADR records. " +
+                  "Identify ONLY direct factual, architectural, port, version, model, status, or configuration contradictions where an older record is now outdated, superseded, or conflicting. " +
+                  "Do NOT flag complementary or additive facts that merely expand on a topic. " +
+                  "Never flag or deprecate Raspberry Pi 5 (node:rpi5) or Qdrant (service:rpi5-qdrant-knowledge-hub) active graph state. " +
+                  "Respond ONLY with a valid JSON array (or [] if no contradictions exist). Each element must follow:\n" +
+                  '[{"conflictType":"semantic_contradiction"|"adr_drift","severity":"low"|"medium"|"high","existingMemoryId":"string or null","existingDecisionId":"string or null","reason":"concise 1-sentence explanation of the contradiction","suggestedAction":"keep"|"supersede"|"merge","mergedContentProposal":"optional combined Markdown if suggestedAction is merge"}]'
+              },
+              {
+                role: "user",
+                content:
+                  `=== NEW_MEMORY (id="${newMem.id}", namespace="${newMem.namespace}", title="${newMem.title}") ===\n` +
+                  `${newMem.content.slice(0, 1500)}\n\n` +
+                  `=== CANDIDATE EXISTING MEMORIES ===\n${existingBlock || "(none)"}\n\n` +
+                  `=== CANDIDATE EXISTING ADRS ===\n${adrBlock || "(none)"}`
+              }
+            ],
+            max_tokens: 700,
+            temperature: 0.1
+          } as never
+        )) as unknown as { response?: string };
+
+        const rawText = (aiRes?.response || "").trim();
+        const jsonMatch = rawText.match(/\[[\s\S]*\]/);
+        if (!jsonMatch) continue;
+
+        const parsed = JSON.parse(jsonMatch[0]) as Array<{
+          conflictType?: string;
+          severity?: string;
+          existingMemoryId?: string | null;
+          existingDecisionId?: string | null;
+          reason?: string;
+          suggestedAction?: string;
+          mergedContentProposal?: string | null;
+        }>;
+
+        if (!Array.isArray(parsed)) continue;
+
+        for (const item of parsed) {
+          const oldMemId = item.existingMemoryId?.trim() || null;
+          const oldAdrId = item.existingDecisionId?.trim() || null;
+          if (!oldMemId && !oldAdrId) continue;
+          if (oldMemId === newMem.id) continue;
+          if (isProtectedInfrastructure(oldMemId)) continue;
+
+          const matchedOldMem = oldMemId
+            ? candidateOlderMemories.find((m) => m.id === oldMemId)
+            : undefined;
+          const matchedOldAdr = oldAdrId
+            ? candidateAdrs.find((a) => a.decision_id === oldAdrId)
+            : undefined;
+
+          if (!matchedOldMem && !matchedOldAdr) continue;
+
+          // Ensure we don't duplicate an already-logged conflict for the same pair
+          const dupCount = this.sql
+            .exec<{ cnt: number }>(
+              `SELECT COUNT(*) AS cnt
+               FROM memory_conflicts
+               WHERE COALESCE(existing_memory_id, '') = ?1
+                 AND COALESCE(existing_decision_id, '') = ?2
+                 AND COALESCE(new_memory_id, '') = ?3`,
+              oldMemId || "",
+              oldAdrId || "",
+              newMem.id
+            )
+            .one().cnt;
+
+          if (dupCount > 0) continue;
+
+          const cType =
+            item.conflictType === "adr_drift" || matchedOldAdr
+              ? "adr_drift"
+              : "semantic_contradiction";
+          const sev =
+            item.severity === "high" || item.severity === "low" ? item.severity : "medium";
+          const action =
+            item.suggestedAction === "keep" || item.suggestedAction === "merge"
+              ? item.suggestedAction
+              : "supersede";
+
+          const ins = this.sql
+            .exec<{ conflict_id: number }>(
+              `INSERT INTO memory_conflicts (
+                 run_id, namespace, conflict_type, severity,
+                 existing_memory_id, existing_title, existing_snippet, existing_edge_id, existing_decision_id,
+                 new_memory_id, new_title, new_snippet, new_edge_id,
+                 reason, suggested_action, merged_content_proposal, status, created_at
+               ) VALUES (
+                 ?1, ?2, ?3, ?4,
+                 ?5, ?6, ?7, NULL, ?8,
+                 ?9, ?10, ?11, NULL,
+                 ?12, ?13, ?14, 'pending', ?15
+               )
+               RETURNING conflict_id`,
+              runId,
+              matchedOldMem?.namespace || matchedOldAdr?.namespace || newMem.namespace,
+              cType,
+              sev,
+              matchedOldMem?.id || null,
+              matchedOldMem?.title || matchedOldAdr?.title || null,
+              (matchedOldMem?.summary || matchedOldMem?.content || matchedOldAdr?.decision || "").slice(0, 280),
+              matchedOldAdr?.decision_id || null,
+              newMem.id,
+              newMem.title,
+              (newMem.summary || newMem.content).slice(0, 280),
+              (item.reason || "Semantic contradiction detected during consolidation audit.").slice(0, 500),
+              action,
+              item.mergedContentProposal || null,
+              now
+            )
+            .one();
+          newlyInsertedIds.push(ins.conflict_id);
+        }
+      } catch {
+        // Non-fatal if LLM response is non-JSON or times out
+      }
+    }
+
+    const currentQueue = await this.getMemoryConflicts({ status: "pending", limit: 50 });
+    const newConflicts = currentQueue.conflicts.filter((c) =>
+      newlyInsertedIds.includes(c.conflict_id)
+    );
+
+    return {
+      ok: true,
+      auditedMemoriesCount: targetMemories.length,
+      detectedCount: newlyInsertedIds.length,
+      pendingCount: currentQueue.pendingCount,
+      newConflicts,
+      pendingConflicts: currentQueue.conflicts
+    };
+  }
+
+  /**
+   * RPC Method 9D: Resolve a Flagged Memory Conflict (15-second keep / supersede / merge decision)
+   */
+  async resolveMemoryConflict(params: ResolveConflictParams): Promise<{
+    ok: boolean;
+    conflictId: number;
+    action?: "keep" | "supersede" | "merge";
+    supersededMemoryId?: string | null;
+    supersededEdgeId?: string | null;
+    supersededDecisionId?: string | null;
+    mergedMemoryId?: string | null;
+    vectorDeleted?: boolean;
+    mutationId?: number;
+    error?: string;
+  }> {
+    const conflictId = Number(params.conflictId);
+    const action = params.action;
+    const clientId = (params.clientId || "cli-morning-triage").trim();
+
+    if (!conflictId || !["keep", "supersede", "merge"].includes(action)) {
+      return {
+        ok: false,
+        conflictId,
+        error: "Valid conflictId and action ('keep' | 'supersede' | 'merge') are required."
+      };
+    }
+
+    const rows = this.sql
+      .exec<MemoryConflictRow>(
+        `SELECT
+           conflict_id, run_id, namespace, conflict_type, severity,
+           existing_memory_id, existing_title, existing_snippet, existing_edge_id, existing_decision_id,
+           new_memory_id, new_title, new_snippet, new_edge_id,
+           reason, suggested_action, merged_content_proposal,
+           status, resolution_action, resolved_by, created_at, resolved_at
+         FROM memory_conflicts
+         WHERE conflict_id = ?1`,
+        conflictId
+      )
+      .toArray();
+
+    const conflict = rows[0];
+    if (!conflict) {
+      return {
+        ok: false,
+        conflictId,
+        error: `Conflict #${conflictId} not found.`
+      };
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+
+    // Action 1: KEEP (Keep existing memory/triple/ADR authoritative; dismiss conflict)
+    if (action === "keep") {
+      this.sql.exec(
+        `UPDATE memory_conflicts
+         SET status = 'resolved',
+             resolution_action = 'keep',
+             resolved_by = ?1,
+             resolved_at = ?2
+         WHERE conflict_id = ?3`,
+        clientId,
+        now,
+        conflictId
+      );
+
+      return {
+        ok: true,
+        conflictId,
+        action: "keep"
+      };
+    }
+
+    // Action 2: SUPERSEDE (Deprecate old memory/triple/ADR in favor of the new record & clean Vectorize)
+    if (action === "supersede") {
+      if (
+        isProtectedInfrastructure(conflict.existing_memory_id) ||
+        isProtectedInfrastructure(conflict.existing_edge_id)
+      ) {
+        return {
+          ok: false,
+          conflictId,
+          error:
+            "Safety Guardrail: Raspberry Pi 5 (node:rpi5) and Qdrant (service:rpi5-qdrant-knowledge-hub) records are protected and cannot be superseded."
+        };
+      }
+
+      let mutationId: number | undefined;
+      let vectorDeleted = false;
+
+      this.ctx.storage.transactionSync(() => {
+        if (conflict.existing_memory_id) {
+          const oldMem = this.sql
+            .exec<{
+              id: string;
+              namespace: string;
+              memory_type: string;
+              title: string;
+              content: string;
+              summary: string | null;
+              importance: number;
+              source_uri: string | null;
+            }>(
+              `SELECT id, namespace, memory_type, title, content, summary, importance, source_uri
+               FROM memories
+               WHERE id = ?1`,
+              conflict.existing_memory_id
+            )
+            .toArray()[0];
+
+          const targetNewId = conflict.new_memory_id || conflict.existing_memory_id;
+          this.sql.exec(
+            `UPDATE memories
+             SET superseded_by = ?1,
+                 updated_at = ?2
+             WHERE id = ?3`,
+            targetNewId,
+            now,
+            conflict.existing_memory_id
+          );
+
+          if (oldMem) {
+            const mutRow = this.sql
+              .exec<{ mutation_id: number }>(
+                `INSERT INTO memory_mutations (
+                   memory_id, namespace, memory_type, operation, client_id,
+                   old_title, old_content, old_summary, old_importance,
+                   new_title, new_content, new_summary, new_importance,
+                   source_uri, rolled_back, created_at
+                 ) VALUES (?1, ?2, ?3, 'DELETE', ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12, 0, ?13)
+                 RETURNING mutation_id`,
+                oldMem.id,
+                oldMem.namespace,
+                oldMem.memory_type,
+                clientId,
+                oldMem.title,
+                oldMem.content,
+                oldMem.summary,
+                oldMem.importance,
+                `[SUPERSEDED BY ${targetNewId}] ${oldMem.title}`,
+                `Superseded via Conflict #${conflictId}: ${conflict.reason}`,
+                oldMem.importance,
+                oldMem.source_uri,
+                now
+              )
+              .one();
+            mutationId = mutRow.mutation_id;
+          }
+        }
+
+        if (conflict.existing_edge_id && !isProtectedInfrastructure(conflict.existing_edge_id)) {
+          this.sql.exec(
+            `UPDATE edges
+             SET valid_until = ?1
+             WHERE edge_id = ?2`,
+            now,
+            conflict.existing_edge_id
+          );
+        }
+
+        if (conflict.existing_decision_id) {
+          this.sql.exec(
+            `UPDATE decisions
+             SET status = 'superseded'
+             WHERE decision_id = ?1`,
+            conflict.existing_decision_id
+          );
+        }
+
+        this.sql.exec(
+          `UPDATE memory_conflicts
+           SET status = 'resolved',
+               resolution_action = 'supersede',
+               resolved_by = ?1,
+               resolved_at = ?2
+           WHERE conflict_id = ?3`,
+          clientId,
+          now,
+          conflictId
+        );
+      });
+
+      if (conflict.existing_memory_id) {
+        try {
+          await this.env.VECTOR_INDEX.deleteByIds([conflict.existing_memory_id]);
+          vectorDeleted = true;
+        } catch {
+          vectorDeleted = false;
+        }
+      }
+
+      return {
+        ok: true,
+        conflictId,
+        action: "supersede",
+        supersededMemoryId: conflict.existing_memory_id,
+        supersededEdgeId: conflict.existing_edge_id,
+        supersededDecisionId: conflict.existing_decision_id,
+        vectorDeleted,
+        mutationId
+      };
+    }
+
+    // Action 3: MERGE (Synthesize existing + new into an updated authoritative memory & re-embed)
+    const targetMemoryId = conflict.existing_memory_id || conflict.new_memory_id;
+    if (!targetMemoryId) {
+      return {
+        ok: false,
+        conflictId,
+        error: `Conflict #${conflictId} has no memory ID to merge.`
+      };
+    }
+
+    const existingMem = conflict.existing_memory_id
+      ? this.sql
+          .exec<{
+            id: string;
+            namespace: string;
+            memory_type: "semantic" | "procedural" | "episodic_summary";
+            title: string;
+            content: string;
+            importance: number;
+            source_uri: string | null;
+          }>(
+            `SELECT id, namespace, memory_type, title, content, importance, source_uri
+             FROM memories
+             WHERE id = ?1`,
+            conflict.existing_memory_id
+          )
+          .toArray()[0]
+      : undefined;
+
+    const newMem = conflict.new_memory_id
+      ? this.sql
+          .exec<{
+            id: string;
+            namespace: string;
+            memory_type: "semantic" | "procedural" | "episodic_summary";
+            title: string;
+            content: string;
+            importance: number;
+          }>(
+            `SELECT id, namespace, memory_type, title, content, importance
+             FROM memories
+             WHERE id = ?1`,
+            conflict.new_memory_id
+          )
+          .toArray()[0]
+      : undefined;
+
+    const mergedText =
+      params.mergedContent?.trim() ||
+      conflict.merged_content_proposal?.trim() ||
+      [
+        existingMem?.content || conflict.existing_snippet || "",
+        `\n\n### Consolidated Governance Update (${new Date(now * 1000).toISOString().slice(0, 10)})`,
+        `- **Triage Resolution (Conflict #${conflictId})**: ${conflict.reason}`,
+        newMem?.content || conflict.new_snippet || ""
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+    const upserted = await this.rememberFact({
+      id: targetMemoryId,
+      namespace: existingMem?.namespace || conflict.namespace || "global",
+      memoryType: existingMem?.memory_type || "semantic",
+      title: existingMem?.title || conflict.existing_title || conflict.new_title || targetMemoryId,
+      content: mergedText,
+      sourceUri: existingMem?.source_uri || undefined,
+      clientId,
+      importance: Math.max(existingMem?.importance ?? 0.7, newMem?.importance ?? 0.7)
+    });
+
+    // If new_memory_id was a standalone non-digest semantic memory distinct from existing_memory_id, mark it superseded
+    let secondaryVectorDeleted = false;
+    if (
+      conflict.existing_memory_id &&
+      conflict.new_memory_id &&
+      conflict.new_memory_id !== conflict.existing_memory_id &&
+      newMem &&
+      newMem.memory_type !== "episodic_summary" &&
+      !isProtectedInfrastructure(conflict.new_memory_id)
+    ) {
+      this.sql.exec(
+        `UPDATE memories SET superseded_by = ?1, updated_at = ?2 WHERE id = ?3`,
+        conflict.existing_memory_id,
+        now,
+        conflict.new_memory_id
+      );
+      try {
+        await this.env.VECTOR_INDEX.deleteByIds([conflict.new_memory_id]);
+        secondaryVectorDeleted = true;
+      } catch {
+        secondaryVectorDeleted = false;
+      }
+    }
+
+    this.sql.exec(
+      `UPDATE memory_conflicts
+       SET status = 'resolved',
+           resolution_action = 'merge',
+           resolved_by = ?1,
+           resolved_at = ?2
+       WHERE conflict_id = ?3`,
+      clientId,
+      now,
+      conflictId
+    );
+
+    return {
+      ok: true,
+      conflictId,
+      action: "merge",
+      mergedMemoryId: upserted.id,
+      vectorDeleted: secondaryVectorDeleted,
+      mutationId: upserted.mutationId
     };
   }
 
@@ -1493,7 +2429,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
              FROM memory_mutations
              WHERE memory_id = ?1
                AND rolled_back = 0
-               AND operation IN ('UPDATE', 'INSERT', 'CONSOLIDATE')
+               AND operation IN ('UPDATE', 'INSERT', 'CONSOLIDATE', 'DELETE')
              ORDER BY mutation_id DESC
              LIMIT 1`,
             memId
@@ -1518,7 +2454,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
     const now = Math.floor(Date.now() / 1000);
     let rollbackAuditId = 0;
 
-    // Case A: Mutation had a prior version (UPDATE) -> restore old_title + old_content
+    // Case A: Mutation had a prior version (UPDATE or SUPERSEDE/DELETE) -> restore old_title + old_content + un-supersede
     if (target.old_content !== null) {
       const restoredTitle = target.old_title || target.new_title || target.memory_id;
       const restoredContent = target.old_content;
@@ -1536,6 +2472,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
                summary = ?3,
                importance = ?4,
                token_count = ?5,
+               superseded_by = NULL,
                updated_at = ?6
            WHERE id = ?7`,
           restoredTitle,
@@ -2032,6 +2969,20 @@ export class BrainMemoryDO extends DurableObject<Env> {
       )
       .toArray();
 
+    const memoryConflictsList = this.sql
+      .exec<MemoryConflictRow>(
+        `SELECT
+           conflict_id, run_id, namespace, conflict_type, severity,
+           existing_memory_id, existing_title, existing_snippet, existing_edge_id, existing_decision_id,
+           new_memory_id, new_title, new_snippet, new_edge_id,
+           reason, suggested_action, merged_content_proposal,
+           status, resolution_action, resolved_by, created_at, resolved_at
+         FROM memory_conflicts
+         ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END ASC, created_at DESC
+         LIMIT 40`
+      )
+      .toArray();
+
     return {
       serverTimeIso: new Date().toISOString(),
       telemetry: {
@@ -2069,7 +3020,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
           role: "Tier-1 Active Semantic, Procedural, Episodic & Property Graph Store",
           status: "ONLINE",
           records: stats.activeMemories + stats.activeEntities + stats.activeEdges + stats.activeDecisions,
-          details: `${stats.activeMemories} Memories • ${stats.activeEntities} Entities • ${stats.activeEdges} Edges • ${stats.activeDecisions} ADRs`
+          details: `${stats.activeMemories} Memories • ${stats.activeEntities} Entities • ${stats.activeEdges} Edges • ${stats.activeDecisions} ADRs • ${stats.pendingConflicts} Pending Conflicts`
         },
         {
           id: "brain-vectorize-1024",
@@ -2111,10 +3062,12 @@ export class BrainMemoryDO extends DurableObject<Env> {
       sleepCycle: {
         nextAlarmIso: stats.nextAlarmIso,
         pendingCount: stats.pendingEpisodicLogs,
+        pendingConflictsCount: stats.pendingConflicts,
         pendingLogs: pendingEpisodicList,
         consolidationRuns: consolidationRunsList,
         activeDecisions: activeDecisionsList,
-        recentMutations: recentMutationsList
+        recentMutations: recentMutationsList,
+        conflicts: memoryConflictsList
       }
     };
   }

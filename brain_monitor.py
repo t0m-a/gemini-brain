@@ -276,6 +276,8 @@ def cmd_summary(args: argparse.Namespace, token: str) -> int:
     mutations = data.get("mutations", [])
     decisions = data.get("decisions", [])
     consolidations = data.get("consolidations", [])
+    conflicts = data.get("conflicts", [])
+    pending_conflicts = [c for c in conflicts if c.get("status") == "pending"]
 
     print(f"{C.BOLD}{'=' * 82}{C.RESET}")
     print(
@@ -300,8 +302,33 @@ def cmd_summary(args: argparse.Namespace, token: str) -> int:
         f"{C.YELLOW}{summary.get('episodicPending', 0)} pending{C.RESET} | "
         f"Next 03:00 AM Alarm: {summary.get('nextAlarmIso') or 'unscheduled'}"
     )
+    conf_pending_cnt = summary.get("conflictsPending", len(pending_conflicts))
+    conf_resolved_cnt = summary.get("conflictsResolved", 0)
+    conf_badge = (
+        f"{C.YELLOW}{C.BOLD}{conf_pending_cnt} PENDING TRIAGE ⚠️{C.RESET}"
+        if conf_pending_cnt > 0
+        else f"{C.GREEN}0 pending ✓{C.RESET}"
+    )
+    print(
+        f" {C.BOLD}Governance Triage{C.RESET}: {conf_badge} | {conf_resolved_cnt} resolved in window"
+    )
     print(f" {C.BOLD}ADRs Added{C.RESET}       : {summary.get('decisionsAdded', 0)}")
     print(f"{'-' * 82}")
+
+    if pending_conflicts:
+        print(
+            f"\n{C.BOLD}{C.YELLOW}⚠️ Pending Semantic Contradictions ({len(pending_conflicts)} — Run 'python brain_monitor.py triage'):{C.RESET}"
+        )
+        for pc in pending_conflicts[:5]:
+            old_ref = pc.get("existing_memory_id") or pc.get("existing_edge_id") or pc.get("existing_decision_id")
+            new_ref = pc.get("new_memory_id") or pc.get("new_edge_id")
+            print(
+                f"  • [{C.BOLD}Conflict #{pc.get('conflict_id')}{C.RESET}] "
+                f"({pc.get('severity', 'medium').upper()} | {pc.get('conflict_type')}) "
+                f"ns:{C.CYAN}{pc.get('namespace')}{C.RESET} -> Recommended: {C.BOLD}{pc.get('suggested_action')}{C.RESET}"
+            )
+            print(f"    Reason  : {pc.get('reason')}")
+            print(f"    Existing: {old_ref} ({pc.get('existing_title')}) vs New: {new_ref} ({pc.get('new_title')})")
 
     if consolidations:
         print(f"\n{C.BOLD}{C.MAGENTA}Nocturnal Consolidation Runs ({len(consolidations)}):{C.RESET}")
@@ -335,10 +362,11 @@ def cmd_summary(args: argparse.Namespace, token: str) -> int:
             print(f"          id: {C.DIM}{m.get('memory_id')}{C.RESET} -> {C.BOLD}{title}{C.RESET}")
 
     print(f"\n{C.DIM}Quick Commands:{C.RESET}")
-    print(f"  • Inspect diffs : python brain_monitor.py diff --hours {args.hours}")
-    print(f"  • View logs     : python brain_monitor.py logs --hours 24")
-    print(f"  • Rollback fact : python brain_monitor.py rollback <mutation_id_or_memory_id>")
-    print(f"  • Hydrate LLM   : python brain_monitor.py hydrate --hours {args.hours} --clip")
+    print(f"  • Triage conflicts : python brain_monitor.py triage")
+    print(f"  • Inspect diffs    : python brain_monitor.py diff --hours {args.hours}")
+    print(f"  • View logs        : python brain_monitor.py logs --hours 24")
+    print(f"  • Rollback fact    : python brain_monitor.py rollback <mutation_id_or_memory_id>")
+    print(f"  • Hydrate LLM      : python brain_monitor.py hydrate --hours {args.hours} --clip")
     return 0
 
 
@@ -665,9 +693,246 @@ def cmd_reindex(args: argparse.Namespace, token: str) -> int:
 
 
 # =============================================================================
-# SUBCOMMAND 6: HYDRATE (MORNING SESSION HYDRATION VIA MCP get_overnight_diff)
+# SUBCOMMAND 6: TRIAGE (ACTIVE MEMORY GOVERNANCE & SEMANTIC CONTRADICTION TRIAGE)
+# =============================================================================
+def _interactive_triage_conflicts(
+    conflicts: List[Dict[str, Any]], token: str, out_stream: Any = sys.stdout
+) -> int:
+    resolved_count = 0
+    for idx, c in enumerate(conflicts, 1):
+        cid = c.get("conflict_id")
+        old_ref = c.get("existing_memory_id") or c.get("existing_edge_id") or c.get("existing_decision_id") or "n/a"
+        new_ref = c.get("new_memory_id") or c.get("new_edge_id") or "n/a"
+        rec = (c.get("suggested_action") or "supersede").lower()
+
+        print(f"\n{C.BOLD}{C.YELLOW}{'=' * 82}{C.RESET}", file=out_stream)
+        print(
+            f" {C.BOLD}{C.YELLOW}⚠️ CONFLICT #{cid} ({idx}/{len(conflicts)}){C.RESET} | "
+            f"Type: {C.CYAN}{c.get('conflict_type')}{C.RESET} | "
+            f"Severity: {C.BOLD}{(c.get('severity') or 'medium').upper()}{C.RESET} | "
+            f"Namespace: {C.CYAN}{c.get('namespace')}{C.RESET}",
+            file=out_stream,
+        )
+        print(f"{C.BOLD}{C.YELLOW}{'=' * 82}{C.RESET}", file=out_stream)
+        print(f"  {C.BOLD}Why Flagged :{C.RESET} {c.get('reason')}", file=out_stream)
+        print(
+            f"  {C.RED}- EXISTING ({old_ref}):{C.RESET} {C.BOLD}{c.get('existing_title') or ''}{C.RESET}\n"
+            f"    {(c.get('existing_snippet') or '').strip()}",
+            file=out_stream,
+        )
+        print(
+            f"  {C.GREEN}+ NEW      ({new_ref}):{C.RESET} {C.BOLD}{c.get('new_title') or ''}{C.RESET}\n"
+            f"    {(c.get('new_snippet') or '').strip()}",
+            file=out_stream,
+        )
+        print(
+            f"\n  {C.BOLD}15s Governance Decision{C.RESET} "
+            f"(Recommended: {C.CYAN}{C.BOLD}{rec}{C.RESET}):",
+            file=out_stream,
+        )
+        print(
+            f"    [{C.BOLD}k{C.RESET}]eep existing | "
+            f"[{C.BOLD}s{C.RESET}]upersede old with new | "
+            f"[{C.BOLD}m{C.RESET}]erge both | "
+            f"[{C.BOLD}Enter{C.RESET}]=skip | "
+            f"[{C.BOLD}q{C.RESET}]uit: ",
+            end="",
+            file=out_stream,
+            flush=True,
+        )
+
+        try:
+            choice = sys.stdin.readline().strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Skipped remaining conflicts.", file=out_stream)
+            break
+
+        if choice in ("q", "quit"):
+            break
+        if choice == "":
+            print(f"  {C.DIM}↷ Skipped Conflict #{cid}.{C.RESET}", file=out_stream)
+            continue
+
+        action_map = {
+            "k": "keep",
+            "keep": "keep",
+            "s": "supersede",
+            "supersede": "supersede",
+            "m": "merge",
+            "merge": "merge",
+            "y": rec,
+        }
+        chosen_action = action_map.get(choice)
+        if not chosen_action:
+            print(f"  {C.DIM}Unrecognized input '{choice}'; skipping Conflict #{cid}.{C.RESET}", file=out_stream)
+            continue
+
+        r_status, r_data, r_lat = api_request(
+            "POST",
+            "/audit/resolve-conflict",
+            token,
+            {
+                "conflictId": cid,
+                "action": chosen_action,
+                "clientId": f"cli-{platform.node()}",
+            },
+        )
+        if r_status == 200 and r_data.get("ok"):
+            resolved_count += 1
+            print(
+                f"  {C.GREEN}✓ Resolved Conflict #{cid} -> {chosen_action.upper()} ({r_lat:.0f} ms){C.RESET}",
+                file=out_stream,
+            )
+        else:
+            print(
+                f"  {C.RED}✗ Failed to resolve Conflict #{cid}: {r_data.get('error') or json.dumps(r_data)}{C.RESET}",
+                file=out_stream,
+            )
+
+    return resolved_count
+
+
+def cmd_triage(args: argparse.Namespace, token: str) -> int:
+    # Case 1: Direct non-interactive resolution (--id <conflict_id> --action <keep|supersede|merge>)
+    if getattr(args, "id", None) and getattr(args, "action", None):
+        payload: Dict[str, Any] = {
+            "conflictId": int(args.id),
+            "action": args.action,
+            "clientId": getattr(args, "client", "") or f"cli-{platform.node()}",
+        }
+        if getattr(args, "merged_content", ""):
+            payload["mergedContent"] = args.merged_content
+        status, data, latency = api_request("POST", "/audit/resolve-conflict", token, payload)
+        if args.json:
+            print(json.dumps(data, indent=2))
+            return 0 if status == 200 and data.get("ok") else 1
+        if status != 200 or not data.get("ok"):
+            print(
+                f"{C.RED}✗ Conflict resolution failed (HTTP {status}): {data.get('error') or json.dumps(data)}{C.RESET}",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"{C.GREEN}{C.BOLD}✓ Resolved Conflict #{args.id} via '{args.action.upper()}' ({latency:.0f} ms){C.RESET}"
+        )
+        return 0
+
+    # Case 2: Optional on-demand LLM + KG contradiction audit (--audit)
+    if getattr(args, "audit", False):
+        print(
+            f"{C.CYAN}Running Active Memory Governance & Semantic Contradiction Audit on {BRAIN_BASE_URL}...{C.RESET}"
+        )
+        a_status, a_data, a_lat = api_request(
+            "POST",
+            "/audit/conflicts",
+            token,
+            {
+                "auditNow": True,
+                "hours": getattr(args, "hours", 24.0),
+                "namespace": getattr(args, "namespace", ""),
+                "limit": 5,
+            },
+            timeout=60,
+        )
+        if a_status != 200:
+            print(
+                f"{C.RED}Audit failed (HTTP {a_status}): {json.dumps(a_data)}{C.RESET}",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"{C.GREEN}✓ Audited {a_data.get('auditedMemoriesCount', 0)} recent memories in {a_lat:.0f} ms -> "
+            f"Detected {a_data.get('detectedCount', 0)} new conflict(s) "
+            f"({a_data.get('pendingCount', 0)} total pending).{C.RESET}"
+        )
+
+    # Case 3: Fetch conflicts queue
+    status_filter = "all" if getattr(args, "all", False) else "pending"
+    status, data, latency = api_request(
+        "POST",
+        "/audit/conflicts",
+        token,
+        {
+            "status": status_filter,
+            "namespace": getattr(args, "namespace", ""),
+            "limit": getattr(args, "limit", 50),
+        },
+    )
+    if status != 200:
+        print(f"{C.RED}Error (HTTP {status}): {json.dumps(data)}{C.RESET}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+
+    conflicts = data.get("conflicts", [])
+    pending = [c for c in conflicts if c.get("status") == "pending"]
+
+    print(f"{C.BOLD}{'=' * 82}{C.RESET}")
+    print(
+        f" {C.BOLD}{C.CYAN}ACTIVE MEMORY GOVERNANCE & CONTRADICTION TRIAGE{C.RESET} "
+        f"(Pending: {data.get('pendingCount', 0)} | Resolved: {data.get('resolvedCount', 0)} | {latency:.0f} ms)"
+    )
+    print(f"{C.BOLD}{'=' * 82}{C.RESET}")
+
+    if not conflicts:
+        print(
+            f"\n{C.GREEN}✓ Zero pending memory conflicts!{C.RESET} "
+            f"{C.DIM}(Pass --audit to run an immediate LLM + KG contradiction scan){C.RESET}"
+        )
+        return 0
+
+    if pending and sys.stdin.isatty() and not getattr(args, "no_prompt", False):
+        _interactive_triage_conflicts(pending, token, out_stream=sys.stdout)
+    else:
+        for c in conflicts:
+            st = c.get("status", "pending")
+            badge = (
+                f"{C.YELLOW}[PENDING]{C.RESET}"
+                if st == "pending"
+                else f"{C.GREEN}[RESOLVED:{(c.get('resolution_action') or '').upper()}]{C.RESET}"
+            )
+            print(
+                f"\n  [Conflict #{c.get('conflict_id')}] {badge} "
+                f"({(c.get('severity') or 'medium').upper()} | {c.get('conflict_type')}) "
+                f"ns:{C.CYAN}{c.get('namespace')}{C.RESET} | Recommended: {C.BOLD}{c.get('suggested_action')}{C.RESET}"
+            )
+            print(f"    Reason  : {c.get('reason')}")
+            print(
+                f"    Existing: {c.get('existing_memory_id') or c.get('existing_edge_id') or c.get('existing_decision_id')} "
+                f"-> {c.get('existing_title')}"
+            )
+            print(
+                f"    New     : {c.get('new_memory_id') or c.get('new_edge_id')} "
+                f"-> {c.get('new_title')}"
+            )
+
+    return 0
+
+
+# =============================================================================
+# SUBCOMMAND 7: HYDRATE (MORNING SESSION HYDRATION VIA MCP get_overnight_diff)
 # =============================================================================
 def cmd_hydrate(args: argparse.Namespace, token: str) -> int:
+    # Step 1: Check for pending semantic contradictions before hydrating morning session
+    if not args.json and not getattr(args, "no_triage", False) and sys.stdin.isatty():
+        c_status, c_data, _ = api_request(
+            "POST",
+            "/audit/conflicts",
+            token,
+            {"status": "pending", "namespace": args.namespace or "", "limit": 20},
+        )
+        pending_conflicts = (c_data.get("conflicts") or []) if c_status == 200 else []
+        if pending_conflicts:
+            print(
+                f"{C.YELLOW}{C.BOLD}⚠️  {len(pending_conflicts)} pending memory conflict(s) detected overnight! "
+                f"Starting 15-second morning governance triage...{C.RESET}",
+                file=sys.stderr,
+            )
+            _interactive_triage_conflicts(pending_conflicts, token, out_stream=sys.stderr)
+            print("", file=sys.stderr)
+
     mcp_args: Dict[str, Any] = {
         "hours": args.hours,
         "format": "json" if args.json else "markdown",
@@ -827,9 +1092,38 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["ALL", "INSERT", "UPDATE", "DELETE", "CONSOLIDATE", "ROLLBACK"],
         help="Filter by operation type",
     )
+    p_hy.add_argument(
+        "--no-triage",
+        action="store_true",
+        help="Skip interactive 15s conflict triage prompt before hydration",
+    )
     p_hy.add_argument("--clip", action="store_true", help="Copy hydration block to clipboard (Win11/Linux/SSH)")
     p_hy.add_argument("--out", type=str, default="", help="Write hydration Markdown to file path")
     p_hy.add_argument("--json", action="store_true", help="Output JSON format from MCP tool")
+
+    # 7. triage (and conflicts alias)
+    for sub_name in ("triage", "conflicts"):
+        p_tr = sub.add_parser(
+            sub_name,
+            help="Active Memory Governance: audit or resolve semantic contradictions (keep / supersede / merge)",
+        )
+        p_tr.add_argument("--audit", action="store_true", help="Trigger an immediate LLM + KG contradiction audit")
+        p_tr.add_argument("--hours", type=float, default=24.0, help="Lookback window in hours for --audit (default: 24)")
+        p_tr.add_argument("--namespace", type=str, default="", help="Filter by namespace")
+        p_tr.add_argument("--all", action="store_true", help="Show both pending and resolved conflicts")
+        p_tr.add_argument("--no-prompt", action="store_true", help="List conflicts without interactive prompt")
+        p_tr.add_argument("--id", type=int, default=0, help="Conflict ID to resolve non-interactively")
+        p_tr.add_argument(
+            "--action",
+            type=str,
+            default="",
+            choices=["", "keep", "supersede", "merge"],
+            help="Resolution decision for --id ('keep', 'supersede', or 'merge')",
+        )
+        p_tr.add_argument("--merged-content", type=str, default="", help="Optional custom merged content for 'merge'")
+        p_tr.add_argument("--client", type=str, default="", help="Optional client ID for audit attribution")
+        p_tr.add_argument("--limit", type=int, default=50, help="Max conflicts to list")
+        p_tr.add_argument("--json", action="store_true", help="Output raw JSON")
 
     return parser
 
@@ -866,6 +1160,8 @@ def main() -> None:
         "rollback": cmd_rollback,
         "reindex": cmd_reindex,
         "hydrate": cmd_hydrate,
+        "triage": cmd_triage,
+        "conflicts": cmd_triage,
     }
     sys.exit(dispatch[subcmd](args, token))
 
