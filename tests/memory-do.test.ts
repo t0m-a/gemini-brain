@@ -744,4 +744,104 @@ describe("BrainMemoryDO SQLite, FTS5, Governance, Guardrails & Rollback invarian
       .one().c;
     expect(remainingPending2).toBe(0);
   });
+
+  it("chunks large reindexMemories batches below Workers AI bge-m3 60,000-token context limit", async () => {
+    const state = createMockDurableObjectState();
+    const { env, vectorIndex } = createMockEnv();
+    const origRun = env.AI.run.bind(env.AI);
+
+    const observedBatches: Array<{ count: number; totalChars: number; truncateInputs?: boolean }> = [];
+    env.AI = {
+      async run(model: string, input: Record<string, unknown>) {
+        if (model === "@cf/baai/bge-m3" && Array.isArray(input.text)) {
+          const texts = input.text as string[];
+          const totalChars = texts.reduce((sum, t) => sum + t.length, 0);
+          observedBatches.push({
+            count: texts.length,
+            totalChars,
+            truncateInputs: input.truncate_inputs as boolean | undefined
+          });
+          // Simulate Workers AI 8007 rejection if a batch ever gets too large
+          if (totalChars > 30_000 || texts.length > 16) {
+            throw new Error("8007: Max context reached 63550 tokens but model supports only 60000");
+          }
+        }
+        return origRun(model as never, input as never);
+      }
+    } as unknown as typeof env.AI;
+
+    const brain = new BrainMemoryDO(state as unknown as DurableObjectState, env);
+    await state.waitUntilReady();
+
+    // Seed 50 large memories (~3,600 chars each, ~180k chars total) directly into SQLite
+    const longBody = "Cloudflare Workers Durable Object SQLite FTS5 Vectorize ".repeat(70);
+    state.sql.exec("BEGIN");
+    for (let i = 0; i < 50; i++) {
+      state.sql.exec(
+        `INSERT INTO memories (id, namespace, memory_type, title, content, summary, token_count)
+         VALUES (?1, 'global', 'semantic', ?2, ?3, 'summary', 950)`,
+        `mem-bulk-${i}`,
+        `Bulk Memory #${i}`,
+        longBody
+      );
+    }
+    state.sql.exec("COMMIT");
+
+    const res = await brain.reindexMemories({ rebuildFts: true, hours: 720, limit: 50 });
+
+    expect(res.ok).toBe(true);
+    expect(res.ftsRebuilt).toBe(true);
+    expect(res.reindexedVectors).toBe(50);
+    expect(res.memoryIds).toHaveLength(50);
+    expect(vectorIndex.vectors.size).toBe(50);
+
+    // Must have been split across multiple bounded batches, each <= 24,000 chars and <= 16 items
+    expect(observedBatches.length).toBeGreaterThan(1);
+    for (const batch of observedBatches) {
+      expect(batch.count).toBeLessThanOrEqual(16);
+      expect(batch.totalChars).toBeLessThanOrEqual(24_000);
+      expect(batch.truncateInputs).toBe(true);
+    }
+  });
+
+  it("adaptively splits embedding batches when Workers AI throws 8007 max context overflow", async () => {
+    const state = createMockDurableObjectState();
+    const { env, vectorIndex } = createMockEnv();
+    const origRun = env.AI.run.bind(env.AI);
+
+    let overflowErrorsThrown = 0;
+    env.AI = {
+      async run(model: string, input: Record<string, unknown>) {
+        if (model === "@cf/baai/bge-m3" && Array.isArray(input.text)) {
+          const texts = input.text as string[];
+          if (texts.length > 2) {
+            overflowErrorsThrown++;
+            throw new Error("8007: Max context reached 63550 tokens but model supports only 60000");
+          }
+        }
+        return origRun(model as never, input as never);
+      }
+    } as unknown as typeof env.AI;
+
+    const brain = new BrainMemoryDO(state as unknown as DurableObjectState, env);
+    await state.waitUntilReady();
+
+    for (let i = 0; i < 5; i++) {
+      state.sql.exec(
+        `INSERT INTO memories (id, namespace, memory_type, title, content, summary, token_count)
+         VALUES (?1, 'global', 'semantic', ?2, ?3, 'summary', 200)`,
+        `mem-retry-${i}`,
+        `Retry Memory #${i}`,
+        `Dense token payload #${i} `.repeat(30)
+      );
+    }
+
+    const res = await brain.reindexMemories({ rebuildFts: false, hours: 720, limit: 10 });
+
+    expect(res.ok).toBe(true);
+    expect(res.ftsRebuilt).toBe(false);
+    expect(res.reindexedVectors).toBe(5);
+    expect(overflowErrorsThrown).toBeGreaterThan(0);
+    expect(vectorIndex.vectors.size).toBe(5);
+  });
 });

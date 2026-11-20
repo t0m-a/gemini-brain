@@ -409,6 +409,88 @@ export class BrainMemoryDO extends DurableObject<Env> {
   }
 
   /**
+   * Generates dense 1024-dim embeddings via Workers AI (@cf/baai/bge-m3) in safe,
+   * context-budgeted chunks.
+   *
+   * Cloudflare Workers AI `@cf/baai/bge-m3` enforces a 60,000-token total batch context
+   * window (`AiError 8007`) across all strings in `text: string[]`. Chunking by both
+   * item count (<= 16) and total character budget (<= 24,000 chars) keeps every batch
+   * well below 60,000 tokens even for dense code/JSON/multilingual text, and an adaptive
+   * split-and-retry guard handles any pathological tokenization edge case.
+   */
+  private async embedTexts(texts: string[]): Promise<Array<number[] | undefined>> {
+    if (texts.length === 0) return [];
+
+    const MAX_BATCH_ITEMS = 16;
+    const MAX_BATCH_CHARS = 24_000;
+    const MAX_ITEM_CHARS = 3_800;
+
+    const normalized = texts.map((t) =>
+      t.length > MAX_ITEM_CHARS ? t.slice(0, MAX_ITEM_CHARS) : t
+    );
+
+    const isContextLimitError = (err: unknown): boolean => {
+      const msg = err instanceof Error ? err.message : String(err);
+      return /\b8007\b|max context|context.*limit|too long|token/i.test(msg);
+    };
+
+    const runChunk = async (chunk: string[]): Promise<Array<number[] | undefined>> => {
+      if (chunk.length === 0) return [];
+      try {
+        const res = (await this.env.AI.run(
+          this.env.EMBEDDING_MODEL as "@cf/baai/bge-m3",
+          {
+            text: chunk,
+            truncate_inputs: true
+          }
+        )) as { data?: number[][] };
+        return chunk.map((_, idx) => res.data?.[idx]);
+      } catch (err) {
+        if (isContextLimitError(err)) {
+          if (chunk.length > 1) {
+            const mid = Math.ceil(chunk.length / 2);
+            const left = await runChunk(chunk.slice(0, mid));
+            const right = await runChunk(chunk.slice(mid));
+            return [...left, ...right];
+          }
+          const single = chunk[0] ?? "";
+          if (single.length > 512) {
+            return runChunk([single.slice(0, Math.floor(single.length / 2))]);
+          }
+        }
+        throw err;
+      }
+    };
+
+    const batches: string[][] = [];
+    let currentBatch: string[] = [];
+    let currentChars = 0;
+
+    for (const item of normalized) {
+      if (
+        currentBatch.length > 0 &&
+        (currentBatch.length >= MAX_BATCH_ITEMS || currentChars + item.length > MAX_BATCH_CHARS)
+      ) {
+        batches.push(currentBatch);
+        currentBatch = [];
+        currentChars = 0;
+      }
+      currentBatch.push(item);
+      currentChars += item.length;
+    }
+    if (currentBatch.length > 0) {
+      batches.push(currentBatch);
+    }
+
+    const results: Array<number[] | undefined> = [];
+    for (const batch of batches) {
+      const batchVectors = await runChunk(batch);
+      results.push(...batchVectors);
+    }
+    return results;
+  }
+
+  /**
    * RPC Method 1: Upsert a Semantic Memory + Knowledge Graph Triples + Vector Embedding
    */
   async rememberFact(input: {
@@ -506,13 +588,10 @@ export class BrainMemoryDO extends DurableObject<Env> {
       };
     });
 
-    // 1. Generate 1024-dim dense embeddings in a single Workers AI batch call (@cf/baai/bge-m3)
-    const embeddingResponse = (await this.env.AI.run(
-      this.env.EMBEDDING_MODEL as "@cf/baai/bge-m3",
-      {
-        text: prepared.map((p) => `${p.title}\n${p.content.slice(0, 3500)}`)
-      }
-    )) as { data: number[][] };
+    // 1. Generate 1024-dim dense embeddings in context-budgeted Workers AI batches (@cf/baai/bge-m3)
+    const embeddedVectors = await this.embedTexts(
+      prepared.map((p) => `${p.title.slice(0, 300)}\n${p.content.slice(0, 3500)}`)
+    );
 
     const mutationIds: number[] = [];
 
@@ -744,7 +823,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
     // 3. Upsert dense vectors into Cloudflare Vectorize
     const vectors: VectorizeVector[] = [];
     prepared.forEach((p, idx) => {
-      const vec = embeddingResponse.data?.[idx];
+      const vec = embeddedVectors[idx];
       if (vec) {
         vectors.push({
           id: p.id,
@@ -752,7 +831,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
           namespace: p.namespace,
           metadata: {
             namespace: p.namespace,
-            title: p.title,
+            title: p.title.slice(0, 500),
             memory_type: p.memoryType
           }
         });
@@ -3557,16 +3636,13 @@ export class BrainMemoryDO extends DurableObject<Env> {
       };
     }
 
-    const embRes = (await this.env.AI.run(
-      this.env.EMBEDDING_MODEL as "@cf/baai/bge-m3",
-      {
-        text: rows.map((r) => `${r.title}\n${r.content.slice(0, 3500)}`)
-      }
-    )) as { data: number[][] };
+    const embeddedVectors = await this.embedTexts(
+      rows.map((r) => `${r.title.slice(0, 300)}\n${r.content.slice(0, 3500)}`)
+    );
 
     const vectors: VectorizeVector[] = [];
     rows.forEach((r, idx) => {
-      const vec = embRes.data?.[idx];
+      const vec = embeddedVectors[idx];
       if (vec) {
         vectors.push({
           id: r.id,
@@ -3574,7 +3650,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
           namespace: r.namespace,
           metadata: {
             namespace: r.namespace,
-            title: r.title,
+            title: r.title.slice(0, 500),
             memory_type: r.memory_type
           }
         });

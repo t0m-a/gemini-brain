@@ -1598,132 +1598,146 @@ export default {
       }
 
       const stub = getBrainStub();
-      if (action === "dashboard") {
-        const snapshot = await stub.getDashboardSnapshot({
-          namespace: typeof body.namespace === "string" ? body.namespace : undefined,
-          memoryType: typeof body.memoryType === "string" ? body.memoryType : undefined,
-          search: typeof body.search === "string" ? body.search : undefined,
-          limit: typeof body.limit === "number" ? body.limit : 250
-        });
-        return Response.json({ ok: true, ...snapshot }, { status: 200, headers: corsHeaders });
-      }
-
-      if (action === "recall") {
-        const query = String(body.query || "").trim();
-        if (!query) {
-          return Response.json({ ok: false, error: "Missing 'query'" }, { status: 200, headers: corsHeaders });
+      try {
+        if (action === "dashboard") {
+          const snapshot = await stub.getDashboardSnapshot({
+            namespace: typeof body.namespace === "string" ? body.namespace : undefined,
+            memoryType: typeof body.memoryType === "string" ? body.memoryType : undefined,
+            search: typeof body.search === "string" ? body.search : undefined,
+            limit: typeof body.limit === "number" ? body.limit : 250
+          });
+          return Response.json({ ok: true, ...snapshot }, { status: 200, headers: corsHeaders });
         }
-        const recallRes = await stub.hybridRecall({
-          query,
-          namespace: typeof body.namespace === "string" ? body.namespace : undefined,
-          tokenBudget: typeof body.tokenBudget === "number" ? body.tokenBudget : 2000
-        });
-        return Response.json({ ok: true, ...recallRes }, { status: 200, headers: corsHeaders });
-      }
 
-      if (action === "consolidate") {
-        const consRes = await stub.runConsolidationNow(
-          typeof body.triggerSource === "string" ? body.triggerSource : "dashboard_noc"
+        if (action === "recall") {
+          const query = String(body.query || "").trim();
+          if (!query) {
+            return Response.json({ ok: false, error: "Missing 'query'" }, { status: 200, headers: corsHeaders });
+          }
+          const recallRes = await stub.hybridRecall({
+            query,
+            namespace: typeof body.namespace === "string" ? body.namespace : undefined,
+            tokenBudget: typeof body.tokenBudget === "number" ? body.tokenBudget : 2000
+          });
+          return Response.json({ ok: true, ...recallRes }, { status: 200, headers: corsHeaders });
+        }
+
+        if (action === "consolidate") {
+          const consRes = await stub.runConsolidationNow(
+            typeof body.triggerSource === "string" ? body.triggerSource : "dashboard_noc"
+          );
+          return Response.json({ ok: true, ...consRes }, { status: 200, headers: corsHeaders });
+        }
+
+        if (action === "reindex") {
+          const reidxRes = await stub.reindexMemories({
+            rebuildFts: body.rebuildFts !== false,
+            hours: typeof body.hours === "number" ? body.hours : 720,
+            limit: typeof body.limit === "number" ? body.limit : 50
+          });
+          return Response.json({ ...reidxRes }, { status: 200, headers: corsHeaders });
+        }
+
+        if (action === "rollback") {
+          const rbRes = await stub.rollbackMutation({
+            mutationId: typeof body.mutationId === "number" ? body.mutationId : undefined,
+            memoryId: typeof body.memoryId === "string" ? body.memoryId : undefined,
+            clientId: typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
+          });
+          return Response.json(rbRes, { status: 200, headers: corsHeaders });
+        }
+
+        if (action === "conflicts") {
+          const confRes = await stub.getMemoryConflicts({
+            status:
+              body.status === "pending" || body.status === "resolved" ? body.status : "all",
+            namespace: typeof body.namespace === "string" ? body.namespace : undefined,
+            limit: typeof body.limit === "number" ? body.limit : 50
+          });
+          return Response.json({ ok: true, ...confRes }, { status: 200, headers: corsHeaders });
+        }
+
+        if (action === "audit_conflicts") {
+          const auditRes = await stub.auditContradictionsNow({
+            memoryId: typeof body.memoryId === "string" ? body.memoryId : undefined,
+            hours: typeof body.hours === "number" ? body.hours : 24,
+            namespace: typeof body.namespace === "string" ? body.namespace : undefined,
+            limit: typeof body.limit === "number" ? body.limit : 5
+          });
+          return Response.json(auditRes, { status: 200, headers: corsHeaders });
+        }
+
+        if (action === "resolve_conflict") {
+          const resAction =
+            body.action === "keep" || body.action === "supersede" || body.action === "merge"
+              ? body.action
+              : "supersede";
+          const resolveRes = await stub.resolveMemoryConflict({
+            conflictId: Number(body.conflictId),
+            action: resAction,
+            mergedContent: typeof body.mergedContent === "string" ? body.mergedContent : undefined,
+            clientId:
+              typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
+          });
+          return Response.json(resolveRes, { status: 200, headers: corsHeaders });
+        }
+
+        if (action === "forget") {
+          const forgetRes = await stub.forgetMemory({
+            memoryId: typeof body.memoryId === "string" ? body.memoryId : "",
+            mode: body.mode === "hard_delete" ? "hard_delete" : "soft_retire",
+            reason: typeof body.reason === "string" ? body.reason : undefined,
+            retireLinkedEdges: body.retireLinkedEdges !== false,
+            clientId:
+              typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
+          });
+          return Response.json(forgetRes, { status: 200, headers: corsHeaders });
+        }
+
+        if (action === "outcomes") {
+          const outRes = await stub.getOutcomes({
+            namespace: typeof body.namespace === "string" ? body.namespace : undefined,
+            status:
+              body.status === "success" ||
+              body.status === "partial" ||
+              body.status === "failure" ||
+              body.status === "abandoned"
+                ? body.status
+                : "all",
+            hours: typeof body.hours === "number" ? body.hours : 720,
+            limit: typeof body.limit === "number" ? body.limit : 40
+          });
+          return Response.json({ ok: true, ...outRes }, { status: 200, headers: corsHeaders });
+        }
+
+        if (action === "validate") {
+          const verdict =
+            body.verdict === "confirmed" || body.verdict === "weakened" || body.verdict === "invalid"
+              ? body.verdict
+              : "confirmed";
+          const valRes = await stub.validateMemory({
+            memoryId: typeof body.memoryId === "string" ? body.memoryId : "",
+            verdict,
+            evidenceUri: typeof body.evidenceUri === "string" ? body.evidenceUri : undefined,
+            notes: typeof body.notes === "string" ? body.notes : undefined,
+            autoRetireOnInvalid: body.autoRetireOnInvalid === true,
+            clientId:
+              typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
+          });
+          return Response.json(valRes, { status: 200, headers: corsHeaders });
+        }
+
+        return Response.json(
+          { ok: false, error: `Unknown NOC action: ${action}` },
+          { status: 400, headers: corsHeaders }
         );
-        return Response.json({ ok: true, ...consRes }, { status: 200, headers: corsHeaders });
-      }
-
-      if (action === "reindex") {
-        const reidxRes = await stub.reindexMemories({
-          rebuildFts: body.rebuildFts !== false,
-          hours: typeof body.hours === "number" ? body.hours : 720,
-          limit: typeof body.limit === "number" ? body.limit : 50
-        });
-        return Response.json({ ...reidxRes }, { status: 200, headers: corsHeaders });
-      }
-
-      if (action === "rollback") {
-        const rbRes = await stub.rollbackMutation({
-          mutationId: typeof body.mutationId === "number" ? body.mutationId : undefined,
-          memoryId: typeof body.memoryId === "string" ? body.memoryId : undefined,
-          clientId: typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
-        });
-        return Response.json(rbRes, { status: 200, headers: corsHeaders });
-      }
-
-      if (action === "conflicts") {
-        const confRes = await stub.getMemoryConflicts({
-          status:
-            body.status === "pending" || body.status === "resolved" ? body.status : "all",
-          namespace: typeof body.namespace === "string" ? body.namespace : undefined,
-          limit: typeof body.limit === "number" ? body.limit : 50
-        });
-        return Response.json({ ok: true, ...confRes }, { status: 200, headers: corsHeaders });
-      }
-
-      if (action === "audit_conflicts") {
-        const auditRes = await stub.auditContradictionsNow({
-          memoryId: typeof body.memoryId === "string" ? body.memoryId : undefined,
-          hours: typeof body.hours === "number" ? body.hours : 24,
-          namespace: typeof body.namespace === "string" ? body.namespace : undefined,
-          limit: typeof body.limit === "number" ? body.limit : 5
-        });
-        return Response.json(auditRes, { status: 200, headers: corsHeaders });
-      }
-
-      if (action === "resolve_conflict") {
-        const resAction =
-          body.action === "keep" || body.action === "supersede" || body.action === "merge"
-            ? body.action
-            : "supersede";
-        const resolveRes = await stub.resolveMemoryConflict({
-          conflictId: Number(body.conflictId),
-          action: resAction,
-          mergedContent: typeof body.mergedContent === "string" ? body.mergedContent : undefined,
-          clientId:
-            typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
-        });
-        return Response.json(resolveRes, { status: 200, headers: corsHeaders });
-      }
-
-      if (action === "forget") {
-        const forgetRes = await stub.forgetMemory({
-          memoryId: typeof body.memoryId === "string" ? body.memoryId : "",
-          mode: body.mode === "hard_delete" ? "hard_delete" : "soft_retire",
-          reason: typeof body.reason === "string" ? body.reason : undefined,
-          retireLinkedEdges: body.retireLinkedEdges !== false,
-          clientId:
-            typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
-        });
-        return Response.json(forgetRes, { status: 200, headers: corsHeaders });
-      }
-
-      if (action === "outcomes") {
-        const outRes = await stub.getOutcomes({
-          namespace: typeof body.namespace === "string" ? body.namespace : undefined,
-          status:
-            body.status === "success" ||
-            body.status === "partial" ||
-            body.status === "failure" ||
-            body.status === "abandoned"
-              ? body.status
-              : "all",
-          hours: typeof body.hours === "number" ? body.hours : 720,
-          limit: typeof body.limit === "number" ? body.limit : 40
-        });
-        return Response.json({ ok: true, ...outRes }, { status: 200, headers: corsHeaders });
-      }
-
-      if (action === "validate") {
-        const verdict =
-          body.verdict === "confirmed" || body.verdict === "weakened" || body.verdict === "invalid"
-            ? body.verdict
-            : "confirmed";
-        const valRes = await stub.validateMemory({
-          memoryId: typeof body.memoryId === "string" ? body.memoryId : "",
-          verdict,
-          evidenceUri: typeof body.evidenceUri === "string" ? body.evidenceUri : undefined,
-          notes: typeof body.notes === "string" ? body.notes : undefined,
-          autoRetireOnInvalid: body.autoRetireOnInvalid === true,
-          clientId:
-            typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
-        });
-        return Response.json(valRes, { status: 200, headers: corsHeaders });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[noc] action=${action} failed:`, message);
+        return Response.json(
+          { ok: false, error: message, action },
+          { status: 500, headers: corsHeaders }
+        );
       }
     }
 
@@ -1858,11 +1872,17 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/audit/reindex") {
-      const body = (await request.json().catch(() => ({}))) as Parameters<
-        BrainMemoryDO["reindexMemories"]
-      >[0];
-      const result = await getBrainStub().reindexMemories(body);
-      return Response.json(result);
+      try {
+        const body = (await request.json().catch(() => ({}))) as Parameters<
+          BrainMemoryDO["reindexMemories"]
+        >[0];
+        const result = await getBrainStub().reindexMemories(body);
+        return Response.json(result, { status: 200, headers: corsHeaders });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[audit/reindex] failed:", message);
+        return Response.json({ ok: false, error: message }, { status: 500, headers: corsHeaders });
+      }
     }
 
     if (request.method === "POST" && url.pathname === "/audit/consolidate") {

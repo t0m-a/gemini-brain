@@ -1195,7 +1195,14 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
 
       if (!res.ok) {
         const errText = await res.text();
-        throw new Error("HTTP " + res.status + ": " + errText);
+        let parsedError = errText;
+        try {
+          const parsed = JSON.parse(errText);
+          if (parsed && typeof parsed.error === "string" && parsed.error.trim()) {
+            parsedError = parsed.error;
+          }
+        } catch {}
+        throw new Error("HTTP " + res.status + ": " + parsedError);
       }
 
       const data = await res.json();
