@@ -40,6 +40,9 @@ takeout-output/
 *.pem
 *.key
 
+# LOCAL HARDWARE PROTOTYPES (DO NOT SYNC)
+esp32-monitor/
+
 # OS & EDITOR ARTIFACTS
 .DS_Store
 Thumbs.db
