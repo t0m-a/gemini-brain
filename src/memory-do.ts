@@ -820,7 +820,8 @@ export class BrainMemoryDO extends DurableObject<Env> {
       )
       .toArray();
 
-    // Fetch active ADRs (compact bullet list) for context grounding
+    // Fetch active ADRs (up to 25) and prioritize query-relevant + namespace-specific rules first
+    // so older foundational ADRs (e.g., ADR-01..ADR-06) are never pushed out by newer decisions.
     const adrRows = this.sql
       .exec<ActiveDecisionRow>(
         `SELECT decision_id, namespace, title, decision, rationale, created_at
@@ -828,15 +829,45 @@ export class BrainMemoryDO extends DurableObject<Env> {
          WHERE (?1 = 'global' OR namespace = ?1 OR namespace = 'global')
            AND status = 'active'
          ORDER BY created_at DESC
-         LIMIT 8`,
+         LIMIT 25`,
         namespace
       )
       .toArray();
 
-    const activeDecisionLines = adrRows.map(
-      (r) =>
-        `- **[${r.decision_id}] (${r.namespace || "global"}) ${r.title}**: ${r.decision}`
+    const adrQueryTokens = Array.from(
+      new Set(
+        params.query
+          .toLowerCase()
+          .replace(/[^\p{L}\p{N}_.\-/]/gu, " ")
+          .split(/\s+/)
+          .filter((t) => t.length >= 2)
+      )
     );
+
+    const rankedAdrs = adrRows
+      .map((r) => {
+        const haystack = `${r.decision_id} ${r.title} ${r.decision}`.toLowerCase();
+        let matchScore = 0;
+        for (const tok of adrQueryTokens) {
+          if (haystack.includes(tok)) {
+            matchScore += r.title.toLowerCase().includes(tok) ? 3 : 1;
+          }
+        }
+        if (namespace !== "global" && r.namespace === namespace) {
+          matchScore += 0.5;
+        }
+        return { row: r, matchScore };
+      })
+      .sort((a, b) => b.matchScore - a.matchScore || b.row.created_at - a.row.created_at);
+
+    const activeDecisionLines = rankedAdrs.map(({ row: r }) => {
+      const compactDecision = r.decision.replace(/\s+/g, " ").trim();
+      const snippet =
+        compactDecision.length > 240
+          ? `${compactDecision.slice(0, 237)}...`
+          : compactDecision;
+      return `- **[${r.decision_id}] (${r.namespace || "global"}) ${r.title}**: ${snippet}`;
+    });
 
     const extraTriples = graphTriples.map((t) => ({
       subject: t.subject_name,

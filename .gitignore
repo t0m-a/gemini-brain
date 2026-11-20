@@ -43,6 +43,10 @@ takeout-output/
 # LOCAL HARDWARE PROTOTYPES (DO NOT SYNC)
 esp32-monitor/
 
+# LOCAL RETRIEVAL EVAL DATASETS & SNAPSHOTS (MAY CONTAIN PRIVATE QUERIES/RESULTS)
+eval/*.local.json
+eval/results/
+
 # OS & EDITOR ARTIFACTS
 .DS_Store
 Thumbs.db

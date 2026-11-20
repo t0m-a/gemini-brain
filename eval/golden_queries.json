@@ -1,0 +1,314 @@
+{
+  "version": "1.0.0",
+  "description": "Public-safe golden retrieval evaluation benchmark grounded in live gemini-brain namespaces (homelab, tsimon.me, minkalab.net, ai-research, global) and kb.tsimon.me federation. Private or client-specific queries belong in eval/golden_queries.local.json (gitignored).",
+  "queries": [
+    {
+      "id": "homelab-rpi5-qdrant-hub",
+      "category": "homelab",
+      "namespace": "homelab",
+      "query": "Raspberry Pi 5 Qdrant knowledge_hub edge rag hub cloudflared",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_ids_any": [
+        "brain:fact-rpi5-edge-rag-hub-host-cloudflared-architecture"
+      ],
+      "required_facts_all": ["Qdrant", "Raspberry Pi"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "homelab-brain-watcher-sync",
+      "category": "homelab",
+      "namespace": "homelab",
+      "query": "brain_watcher.py AST Python Markdown debounce SHA-256 Qdrant sync",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_facts_all": ["brain_watcher", "Qdrant"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "homelab-wireguard-udp-51820",
+      "category": "homelab",
+      "namespace": "homelab",
+      "query": "Which port does the Raspberry Pi WireGuard VPN service use?",
+      "token_budget": 1200,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_facts_all": ["WireGuard", "51820"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "homelab-esp32-watchdog",
+      "category": "homelab",
+      "namespace": "homelab",
+      "query": "Headless ESP-32S Cloudflare Workers Telegram out-of-band watchdog architecture",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_ids_any": [
+        "brain:esp32s-cloudflare-workers-watchdog-architecture"
+      ],
+      "required_facts_all": ["ESP-32S", "Cloudflare"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "homelab-life-os-hub-spoke",
+      "category": "homelab",
+      "namespace": "homelab",
+      "query": "Hub-and-Spoke Personal Life OS Health Connect Cloudflare D1 webhook architecture",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_ids_any": [
+        "brain:life-os-hub-and-spoke-architecture-v1"
+      ],
+      "required_facts_all": ["Life OS", "D1"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "homelab-sync-daily-sessions",
+      "category": "homelab",
+      "namespace": "homelab",
+      "query": "sync_daily_sessions.py Antigravity Gemini CLI transcript harvester",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_facts_all": ["sync_daily_sessions", "episodic"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "homelab-edge-rag-bare-metal-adr",
+      "category": "homelab",
+      "namespace": "global",
+      "query": "Edge-Rag-Hub Raspberry Pi 5 /opt/edge-rag-hub bare-metal vs containerization decision",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_facts_all": ["edge-rag-hub", "Raspberry Pi 5"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "brain-active-memory-governance",
+      "category": "tsimon.me",
+      "namespace": "tsimon.me",
+      "query": "Active Memory Governance memory_conflicts contradiction triage keep supersede merge",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_ids_any": [
+        "brain:arch-active-memory-governance-v1.5"
+      ],
+      "required_facts_all": ["memory_conflicts", "supersede"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "brain-cognitive-noc-waf-adr05",
+      "category": "tsimon.me",
+      "namespace": "tsimon.me",
+      "query": "WAF-Safe /mcp?ui=1 Cognitive NOC dashboard AJAX multiplexer ADR-05",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_ids_any": [
+        "brain:mem_brain_cognitive_noc_dashboard_v130"
+      ],
+      "required_facts_all": ["ADR-05", "/mcp"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "brain-oauth-oidc-dual-auth",
+      "category": "tsimon.me",
+      "namespace": "tsimon.me",
+      "query": "Cloudflare Access OIDC proxy bat brt OAuth 2.1 Gemini Web dual-mode auth",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_ids_any": [
+        "brain:arch-brain-v140-cloudflare-oidc-dual-auth-20261115"
+      ],
+      "required_facts_all": ["OIDC", "OAuth"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "tsimon-boliviaremote-adr06",
+      "category": "tsimon.me",
+      "namespace": "tsimon.me",
+      "query": "boliviaremote.work zero-PII Cloudflare Worker fail-closed /mcp auth ADR-06",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_ids_any": [
+        "brain:fact_boliviaremote_platform_arch_v58",
+        "brain:fact_boliviaremote_cloudflare_dns_worker_state"
+      ],
+      "required_facts_all": ["boliviaremote.work", "ADR-06"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "tsimon-redirect-scheme-adr03",
+      "category": "tsimon.me",
+      "namespace": "tsimon.me",
+      "query": "ADR-03 Cloudflare Redirect Rule explicit https scheme invariant",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_facts_all": ["https://", "Redirect"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "tsimon-gemini-web-8-skills",
+      "category": "tsimon.me",
+      "namespace": "tsimon.me",
+      "query": "Gemini Web 8 custom skills suite brain-session-hydrator brain-checkpoint-generator",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_ids_any": [
+        "brain:chat-archive-gemini-web-8-brain-skills"
+      ],
+      "required_facts_all": ["brain-session-hydrator", "skills"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "brain-nocturnal-0700-consolidation",
+      "category": "tsimon.me",
+      "namespace": "global",
+      "query": "07:00 UTC 03:00 AM nocturnal consolidation alarm Llama 3.3 70B episodic_logs PageRank",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_facts_all": ["07:00", "Llama"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "minkalab-website-cloudflare-stack",
+      "category": "minkalab.net",
+      "namespace": "minkalab.net",
+      "query": "MinkaLab website Cloudflare D1 Worker architecture",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_ids_any": [
+        "brain:minkalab-website-cloudflare-stack"
+      ],
+      "required_facts_all": ["MinkaLab", "Cloudflare"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "minkalab-escudo-digital-workshop",
+      "category": "minkalab.net",
+      "namespace": "minkalab.net",
+      "query": "MinkaLab Escudo Digital Cotidiano digital hygiene workshop kit",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_ids_any": [
+        "brain:minkalab-workshop-escudo-digital-mujeres"
+      ],
+      "required_facts_all": ["Escudo Digital", "MinkaLab"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "minkalab-aynilab-pulpolab-syllabus",
+      "category": "minkalab.net",
+      "namespace": "minkalab.net",
+      "query": "MinkaLab AyniLab PulpoLab civic digital sovereignty 7-module syllabus",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_ids_any": [
+        "brain:2a7e111a-0ca2-43a3-bcf9-ca63444fe184"
+      ],
+      "required_facts_all": ["MinkaLab", "AyniLab"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "minkalab-boliviaremote-integration",
+      "category": "minkalab.net",
+      "namespace": "minkalab.net",
+      "query": "MinkaLab integration with Bolivia Remote Work boliviaremote.work",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_ids_any": [
+        "brain:minkalab-bolivia-remote-work-integration"
+      ],
+      "required_facts_all": ["MinkaLab", "boliviaremote"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "global-behavioral-harnesses",
+      "category": "ai-research",
+      "namespace": "global",
+      "query": "Behavioral harnesses AI coding models Guides Sensors cost-optimized vs frontier",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_ids_any": [
+        "brain:behavioral-harness-ai-models-guides-sensors-economics-v1",
+        "brain:behavioral-harness-ai-models-naresh-jain-v1"
+      ],
+      "required_facts_all": ["Guides", "Sensors"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "global-adr01-epistemic-rigor",
+      "category": "governance",
+      "namespace": "global",
+      "query": "ADR-01 Unified Law of Negative Space epistemic rigor sycophancy",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_facts_all": ["Negative Space", "epistemic"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "global-adr02-kv-cache-alphabetical",
+      "category": "governance",
+      "namespace": "global",
+      "query": "ADR-02 Deterministic KV-Cache Alignment alphabetical MCP tool registration",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_facts_all": ["alphabetical", "KV"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "ai-context-engineering-cognitive-graph",
+      "category": "ai-research",
+      "namespace": "ai-research",
+      "query": "Advanced Context Engineering atomic facts living cognitive graph",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me", "kb.tsimon.me"],
+      "required_ids_any": [
+        "brain:tk_gemf_9ddb136a1ffb2516ece9"
+      ],
+      "required_facts_all": ["Context Engineering", "cognitive"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "federation-az104-entra-rbac",
+      "category": "federation",
+      "namespace": "global",
+      "query": "AZ-104 Azure Administrator Entra ID Active Directory RBAC study guide",
+      "token_budget": 2000,
+      "expected_origins": ["brain.tsimon.me", "kb.tsimon.me"],
+      "required_facts_all": ["AZ-104", "Entra"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "federation-veeam-backup-archive",
+      "category": "federation",
+      "namespace": "global",
+      "query": "Veeam backup retention assessment DPM RMM automation",
+      "token_budget": 2000,
+      "expected_origins": ["brain.tsimon.me", "kb.tsimon.me"],
+      "required_facts_all": ["Veeam", "retention"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "federation-tight-budget-stress",
+      "category": "packing",
+      "namespace": "tsimon.me",
+      "query": "Cloudflare Durable Objects SQLite FTS5 Vectorize 4-way RRF federation kb.tsimon.me",
+      "token_budget": 800,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_facts_all": ["RRF", "Vectorize"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    },
+    {
+      "id": "multilingual-spanish-minkalab",
+      "category": "multilingual",
+      "namespace": "minkalab.net",
+      "query": "arquitectura sitio web MinkaLab Cloudflare Workers D1 talleres higiene digital",
+      "token_budget": 1600,
+      "expected_origins": ["brain.tsimon.me"],
+      "required_ids_any": [
+        "brain:minkalab-website-cloudflare-stack",
+        "brain:minkalab-workshop-escudo-digital-mujeres"
+      ],
+      "required_facts_all": ["MinkaLab"],
+      "forbidden_ids": ["brain:e2e-federation-verification"]
+    }
+  ]
+}

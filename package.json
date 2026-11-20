@@ -6,7 +6,12 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke": "python test_brain_mcp.py --mode smoke",
+    "eval": "python eval/run_eval.py"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.4.0",
@@ -16,6 +21,8 @@
   "devDependencies": {
     "@types/node": "^22.19.15",
     "typescript": "^5.8.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1",
     "wrangler": "^4.14.0"
   },
   "allowScripts": {

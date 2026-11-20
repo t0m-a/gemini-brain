@@ -121,6 +121,18 @@ const FTS_STOPWORDS = new Set([
   "this",
   "what",
   "how",
+  "is",
+  "in",
+  "on",
+  "of",
+  "to",
+  "at",
+  "by",
+  "as",
+  "an",
+  "be",
+  "do",
+  "it",
   "are",
   "was",
   "were",
@@ -540,17 +552,46 @@ export async function fuseBrainAndKb(params: {
   let usedTokens = 0;
   const sections: string[] = [];
 
-  // 1. Always inject Active Architectural Decisions (ADRs) first if present
+  // 1. Pack Active Architectural Decisions (ADRs) individually up to 25% of tokenBudget
+  //    (never drop all ADRs when the combined list exceeds the cap)
   if (params.activeDecisions && params.activeDecisions.length > 0) {
-    const adrBlock = `### Active Architectural Decisions (ADRs)\n${params.activeDecisions.join("\n")}`;
-    const adrTokens = estimateTokens(adrBlock);
-    if (usedTokens + adrTokens <= Math.floor(params.tokenBudget * 0.25)) {
-      sections.push(adrBlock);
+    const adrCap = Math.floor(params.tokenBudget * 0.25);
+    const adrHeader = "### Active Architectural Decisions (ADRs)";
+    const headerTokens = estimateTokens(adrHeader);
+    let adrTokens = headerTokens;
+    const packedAdrs: string[] = [];
+
+    for (const rawLine of params.activeDecisions) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const lineTokens = estimateTokens(`\n${line}`);
+      if (usedTokens + adrTokens + lineTokens <= adrCap) {
+        packedAdrs.push(line);
+        adrTokens += lineTokens;
+      } else if (packedAdrs.length === 0) {
+        // Fit at least the #1 highest-priority ADR truncated cleanly within adrCap
+        const availTokens = adrCap - usedTokens - adrTokens - 2;
+        if (availTokens >= 20) {
+          const maxChars = availTokens * 4;
+          const truncated =
+            line.length > maxChars ? `${line.slice(0, Math.max(20, maxChars - 3))}...` : line;
+          const truncTokens = estimateTokens(`\n${truncated}`);
+          if (usedTokens + adrTokens + truncTokens <= adrCap) {
+            packedAdrs.push(truncated);
+            adrTokens += truncTokens;
+          }
+        }
+        break;
+      }
+    }
+
+    if (packedAdrs.length > 0) {
+      sections.push(`${adrHeader}\n${packedAdrs.join("\n")}`);
       usedTokens += adrTokens;
     }
   }
 
-  // 2. Collect unique 1-Hop Knowledge Graph Triples
+  // 2. Collect and pack unique 1-Hop Knowledge Graph Triples individually up to 45% cumulative budget
   const uniqueTriples = new Set<string>();
   for (const t of params.extraTriples ?? []) {
     uniqueTriples.add(`(${t.subject}) --[${t.predicate}]--> (${t.object})`);
@@ -563,15 +604,26 @@ export async function fuseBrainAndKb(params: {
 
   let graphTriplesCount = 0;
   if (uniqueTriples.size > 0) {
-    const tripleSlice = Array.from(uniqueTriples).slice(0, 15);
-    const kgBlock = `### Connected Knowledge Graph Triples (1-Hop)\n${tripleSlice
-      .map((t) => `- ${t}`)
-      .join("\n")}`;
-    const kgTokens = estimateTokens(kgBlock);
-    if (usedTokens + kgTokens <= Math.floor(params.tokenBudget * 0.45)) {
-      sections.push(kgBlock);
+    const kgCap = Math.floor(params.tokenBudget * 0.45);
+    const kgHeader = "### Connected Knowledge Graph Triples (1-Hop)";
+    let kgTokens = estimateTokens(kgHeader);
+    const packedTriples: string[] = [];
+
+    for (const triple of Array.from(uniqueTriples).slice(0, 15)) {
+      const line = `- ${triple}`;
+      const lineTokens = estimateTokens(`\n${line}`);
+      if (usedTokens + kgTokens + lineTokens <= kgCap) {
+        packedTriples.push(line);
+        kgTokens += lineTokens;
+      } else {
+        break;
+      }
+    }
+
+    if (packedTriples.length > 0) {
+      sections.push(`${kgHeader}\n${packedTriples.join("\n")}`);
       usedTokens += kgTokens;
-      graphTriplesCount = tripleSlice.length;
+      graphTriplesCount = packedTriples.length;
     }
   }
 
