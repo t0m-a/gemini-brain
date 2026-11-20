@@ -282,7 +282,10 @@ function createBrainMcpServer(env: Env) {
           .optional()
           .describe("Optional commit SHA, PR URL, log URI, or artifact path"),
         operatorFeedback: z
-          .union([z.literal(-1), z.literal(0), z.literal(1)])
+          .number()
+          .int()
+          .min(-1)
+          .max(1)
           .optional()
           .describe("Optional explicit operator rating: -1 (harmful/stale), 0 (neutral), +1 (helpful)"),
         clientId: z
@@ -293,7 +296,13 @@ function createBrainMcpServer(env: Env) {
     },
     async (args) => {
       const stub = getBrainStub();
-      const result = await stub.recordOutcome(args);
+      const result = await stub.recordOutcome({
+        ...args,
+        operatorFeedback:
+          args.operatorFeedback === -1 || args.operatorFeedback === 0 || args.operatorFeedback === 1
+            ? args.operatorFeedback
+            : undefined
+      });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
       };
@@ -797,6 +806,42 @@ export default {
     const expectedToken = normalizeBearerToken(env.MCP_BEARER_TOKEN);
     const signingSecret = expectedToken;
 
+    const getBrainStub = () => {
+      const id = env.BRAIN_DO.idFromName("thomas-simon-primary-brain");
+      return env.BRAIN_DO.get(id);
+    };
+
+    // Zero-secret OAuth / auth diagnostic logger (never records tokens, codes, or secrets)
+    const logAuthDiag = (route: string, status: number, details: Record<string, unknown>) => {
+      const payload = JSON.stringify({
+        route,
+        status,
+        ua: request.headers.get("User-Agent") || "",
+        ...details
+      });
+      console.log(`[auth-diag] ${payload}`);
+      if (env.BRAIN_DO && typeof env.BRAIN_DO.idFromName === "function") {
+        ctx.waitUntil(
+          getBrainStub()
+            .logEpisodicEvent({
+              sessionId: "oauth-diag",
+              clientId: "gemini-web-oauth-diag",
+              eventType: "observation",
+              payload
+            })
+            .catch(() => {})
+        );
+      }
+    };
+
+    const safeOriginOf = (raw: string): string => {
+      try {
+        return new URL(raw).origin;
+      } catch {
+        return "invalid-url";
+      }
+    };
+
     if (
       request.method === "GET" &&
       (url.pathname === "/authorize" || url.pathname === "/mcp/authorize")
@@ -813,6 +858,7 @@ export default {
 
       const requestedClientId = url.searchParams.get("client_id") || "";
       if (requestedClientId && requestedClientId !== oauthClientId) {
+        logAuthDiag(url.pathname, 400, { reason: "unknown_client_id" });
         return Response.json(
           { error: "invalid_client", error_description: "Unknown OAuth client_id." },
           { status: 400, headers: corsHeaders }
@@ -822,6 +868,10 @@ export default {
       const callbackUri = `${brainOrigin}/callback`;
       const origRedirectUri = url.searchParams.get("redirect_uri") || callbackUri;
       if (!isAllowedRedirectUri(origRedirectUri, brainOrigin, env.OAUTH_ALLOWED_REDIRECT_ORIGINS)) {
+        logAuthDiag(url.pathname, 400, {
+          reason: "disallowed_redirect_uri",
+          redirectOrigin: safeOriginOf(origRedirectUri)
+        });
         return Response.json(
           { error: "invalid_request", error_description: "Disallowed redirect_uri." },
           { status: 400, headers: corsHeaders }
@@ -834,6 +884,7 @@ export default {
         url.searchParams.get("code_challenge_method") || "S256"
       ).toUpperCase();
       if (codeChallenge && codeChallengeMethod !== "S256" && codeChallengeMethod !== "PLAIN") {
+        logAuthDiag(url.pathname, 400, { reason: "unsupported_pkce_method", ccm: codeChallengeMethod });
         return Response.json(
           {
             error: "invalid_request",
@@ -1028,28 +1079,38 @@ export default {
           );
         }
 
-        // Redeem upstream Cloudflare Access authorization code (single-use & client-authenticated)
+        // Redeem upstream Cloudflare Access authorization code (single-use & client-authenticated).
+        // Preserve HTTP Basic auth header if sent by client (avoiding URL-encoding mutations on secrets);
+        // otherwise use client_secret_post with body client_secret or env.OAUTH_CLIENT_SECRET.
+        const rawAuthHeader = request.headers.get("Authorization");
+        const useForwardedBasic = Boolean(basicCreds && basicCreds.clientId === oauthClientId && rawAuthHeader);
         const cfTokenParams = new URLSearchParams();
         cfTokenParams.set("grant_type", "authorization_code");
         cfTokenParams.set("code", decodedCode.cf);
         cfTokenParams.set("redirect_uri", `${brainOrigin}/callback`);
-        cfTokenParams.set("client_id", oauthClientId);
-        if (providedClientSecret) {
-          cfTokenParams.set("client_secret", providedClientSecret);
+        const cfHeaders: Record<string, string> = {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "application/json"
+        };
+        if (useForwardedBasic && rawAuthHeader) {
+          cfHeaders["Authorization"] = rawAuthHeader;
+        } else {
+          cfTokenParams.set("client_id", oauthClientId);
+          if (providedClientSecret) {
+            cfTokenParams.set("client_secret", providedClientSecret);
+          }
         }
 
         let cfTokenRes: Response;
         try {
           cfTokenRes = await fetch(`${cfOidcBase}/token`, {
             method: "POST",
-            headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
-              Accept: "application/json"
-            },
+            headers: cfHeaders,
             body: cfTokenParams.toString(),
             redirect: "manual"
           });
         } catch {
+          logAuthDiag(url.pathname, 502, { reason: "cf_token_fetch_error" });
           return Response.json(
             {
               error: "invalid_grant",
@@ -1060,6 +1121,13 @@ export default {
         }
 
         if (!cfTokenRes.ok) {
+          logAuthDiag(url.pathname, 400, {
+            reason: "cf_token_rejected",
+            cfStatus: cfTokenRes.status,
+            usedBasic: useForwardedBasic,
+            hasBodySecret: Boolean(params.get("client_secret")),
+            hasEnvSecret: Boolean(env.OAUTH_CLIENT_SECRET)
+          });
           return Response.json(
             {
               error: "invalid_grant",
@@ -1075,6 +1143,7 @@ export default {
         } | null;
 
         if (!cfTokenPayload || (!cfTokenPayload.id_token && !cfTokenPayload.access_token)) {
+          logAuthDiag(url.pathname, 400, { reason: "cf_token_missing_oidc_fields" });
           return Response.json(
             {
               error: "invalid_grant",
@@ -1105,6 +1174,7 @@ export default {
         }
 
         // Fallback to upstream /userinfo if Cloudflare returned an opaque access_token
+        let userinfoStatus = 0;
         if (!upstreamIdentityValid && cfTokenPayload.access_token) {
           try {
             const uiRes = await fetch(`${cfOidcBase}/userinfo`, {
@@ -1113,6 +1183,7 @@ export default {
                 Accept: "application/json"
               }
             });
+            userinfoStatus = uiRes.status;
             if (uiRes.ok) {
               const uiJson = (await uiRes.json().catch(() => ({}))) as {
                 sub?: string;
@@ -1128,6 +1199,12 @@ export default {
         }
 
         if (!upstreamIdentityValid) {
+          logAuthDiag(url.pathname, 400, {
+            reason: "cf_identity_verify_failed",
+            hasIdToken: Boolean(cfTokenPayload.id_token),
+            hasAccessToken: Boolean(cfTokenPayload.access_token),
+            userinfoStatus
+          });
           return Response.json(
             {
               error: "invalid_grant",
@@ -1383,11 +1460,6 @@ export default {
         }
       );
     }
-
-    const getBrainStub = () => {
-      const id = env.BRAIN_DO.idFromName("thomas-simon-primary-brain");
-      return env.BRAIN_DO.get(id);
-    };
 
     // 3. Browser Cognitive NOC Action Multiplexer (POST /mcp?noc=1 or POST /dashboard)
     // Uses POST /mcp (the WAF-whitelisted MCP endpoint) and returns HTTP 200 on auth mismatch

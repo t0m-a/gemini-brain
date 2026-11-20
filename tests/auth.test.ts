@@ -383,4 +383,54 @@ describe("Worker HTTP auth & OAuth 2.1 boundary enforcement (src/index.ts)", () 
     expect(decodedBat?.sub).toBe("user-thomas-verified");
     expect(decodedBat?.email).toBe("thomas@tsimon.me");
   });
+
+  it("emits Gemini-compatible MCP tools/list JSON Schemas with zero anyOf/oneOf/allOf/const/$ref keywords", async () => {
+    const { env } = createMockEnv();
+    const res = await worker.fetch(
+      new Request(`${BRAIN_ORIGIN}/mcp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: `Bearer ${TEST_SECRET}`
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "schema-audit",
+          method: "tools/list",
+          params: {}
+        })
+      }),
+      env,
+      createExecCtx()
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { tools: Array<{ name: string; inputSchema: Record<string, unknown> }> };
+    };
+    const tools = body.result.tools;
+    expect(tools).toHaveLength(9);
+    // Strict ADR-02 alphabetical tool order
+    const names = tools.map((t) => t.name);
+    expect(names).toEqual([...names].sort());
+
+    const forbiddenKeys = new Set(["anyOf", "oneOf", "allOf", "const", "$ref", "not"]);
+    const walkKeys = (obj: unknown, path: string, bad: string[]) => {
+      if (!obj || typeof obj !== "object") return;
+      if (Array.isArray(obj)) {
+        obj.forEach((v, i) => walkKeys(v, `${path}[${i}]`, bad));
+        return;
+      }
+      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+        if (forbiddenKeys.has(k)) bad.push(`${path}.${k}`);
+        walkKeys(v, `${path}.${k}`, bad);
+      }
+    };
+
+    const violations: string[] = [];
+    for (const tool of tools) {
+      walkKeys(tool.inputSchema, tool.name, violations);
+    }
+    expect(violations).toEqual([]);
+  });
 });

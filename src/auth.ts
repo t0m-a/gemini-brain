@@ -117,6 +117,7 @@ export async function verifySignedToken<T extends { exp?: number }>(
 }
 
 const DEFAULT_ALLOWED_HTTPS_HOSTS = [
+  "google.com",
   "gemini.google.com",
   "aistudio.google.com",
   "accounts.google.com"
@@ -125,7 +126,10 @@ const DEFAULT_ALLOWED_HTTPS_HOSTS = [
 const DEFAULT_ALLOWED_HTTPS_SUFFIXES = [
   ".google.com",
   ".googleusercontent.com",
-  ".googleapis.com"
+  ".googleapis.com",
+  ".withgoogle.com",
+  ".google.dev",
+  ".cloud.google"
 ];
 
 /**
