@@ -9,7 +9,7 @@
  *          5. Nocturnal 03:00 AM Sleep Cycle, Episodic Queue & Before/After Mutation Diff Viewer with 1-Click Rollback
  */
 
-export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.0"): string {
+export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.2"): string {
   return `<!DOCTYPE html>
 <html lang="en" class="dark">
 <head>

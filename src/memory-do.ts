@@ -314,6 +314,34 @@ function inferClientId(
   return "mcp-client";
 }
 
+const NOISY_EPISODIC_RPC_METHODS = new Set([
+  "initialize",
+  "notifications/initialized",
+  "notifications/cancelled",
+  "notifications/roots/list_changed",
+  "tools/list",
+  "resources/list",
+  "resources/templates/list",
+  "prompts/list",
+  "ping",
+  "logging/setLevel"
+]);
+
+function isNoisyProtocolEpisodicRow(row: EpisodicLogRow): boolean {
+  if (row.event_type !== "tool_call") return false;
+  try {
+    const parsed = JSON.parse(row.payload) as { rpcMethod?: unknown; status?: unknown };
+    const status = typeof parsed.status === "number" ? parsed.status : 200;
+    return (
+      status < 400 &&
+      typeof parsed.rpcMethod === "string" &&
+      NOISY_EPISODIC_RPC_METHODS.has(parsed.rpcMethod)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export class BrainMemoryDO extends DurableObject<Env> {
   private sql: SqlStorage;
 
@@ -2319,7 +2347,32 @@ export class BrainMemoryDO extends DurableObject<Env> {
       };
     }
 
-    const formattedLogs = rows
+    const substantiveRows = rows.filter((r) => !isNoisyProtocolEpisodicRow(r));
+    if (substantiveRows.length === 0) {
+      // Drain purely noisy legacy handshake rows without creating an empty digest
+      this.ctx.storage.transactionSync(() => {
+        this.sql.exec(
+          `UPDATE episodic_logs
+           SET consolidated = 1
+           WHERE log_id IN (SELECT value FROM json_each(?1))`,
+          JSON.stringify(rows.map((r) => r.log_id))
+        );
+      });
+      const auditRes = await this.auditContradictionsNow({ hours: 24, limit: 3 });
+      const nextMs = await this.ensureAlarmScheduled();
+      return {
+        consolidatedCount: rows.length,
+        runId: null,
+        digestMemoryId: null,
+        digestTitle: null,
+        digestContent: null,
+        conflictsDetected: auditRes.detectedCount,
+        pendingConflictsCount: auditRes.pendingCount,
+        nextAlarmIso: new Date(nextMs).toISOString()
+      };
+    }
+
+    const formattedLogs = substantiveRows
       .map(
         (r) =>
           `[episodic:${r.log_id}] [${new Date(r.created_at * 1000).toISOString()}] client=${r.client_id} session=${r.session_id} type=${r.event_type}\n${r.payload}`
@@ -2351,18 +2404,22 @@ export class BrainMemoryDO extends DurableObject<Env> {
       } as never
     )) as unknown as { response?: string };
 
-    const logIds = rows.map((r) => r.log_id);
-    const uniqueClients = Array.from(new Set(rows.map((r) => r.client_id)));
+    const allLogIds = rows.map((r) => r.log_id);
+    const substantiveLogIds = substantiveRows.map((r) => r.log_id);
+    const filteredNoiseCount = rows.length - substantiveRows.length;
+    const uniqueClients = Array.from(new Set(substantiveRows.map((r) => r.client_id)));
     const dateStr = new Date().toISOString().slice(0, 10);
-    const windowStartIso = new Date(rows[0].created_at * 1000).toISOString();
-    const windowEndIso = new Date(rows[rows.length - 1].created_at * 1000).toISOString();
+    const windowStartIso = new Date(substantiveRows[0].created_at * 1000).toISOString();
+    const windowEndIso = new Date(
+      substantiveRows[substantiveRows.length - 1].created_at * 1000
+    ).toISOString();
 
     const digest =
       aiResult?.response?.trim() ||
-      `Consolidated ${rows.length} episodic events (${logIds.map((id) => `[episodic:${id}]`).join(", ")}).`;
+      `Consolidated ${substantiveRows.length} episodic events (${substantiveLogIds.map((id) => `[episodic:${id}]`).join(", ")}).`;
     const digestTitle = `Daily Consolidated Episodic Digest ${dateStr}`;
-    const logIdsQuery = logIds.slice(0, 25).join(",");
-    const digestSourceUri = `brain://consolidation/${dateStr}?logs=${logIdsQuery}${logIds.length > 25 ? `(+${logIds.length - 25})` : ""}`;
+    const logIdsQuery = substantiveLogIds.slice(0, 25).join(",");
+    const digestSourceUri = `brain://consolidation/${dateStr}?logs=${logIdsQuery}${substantiveLogIds.length > 25 ? `(+${substantiveLogIds.length - 25})` : ""}`;
 
     // Store nocturnal digest as a navigational summary tier (confidence=0.7) with explicit provenance metadata
     const saved = await this.rememberFact({
@@ -2377,7 +2434,8 @@ export class BrainMemoryDO extends DurableObject<Env> {
       metadata: {
         provenance_tier: "llm_digest",
         trigger_source: triggerSource,
-        source_log_ids: logIds,
+        source_log_ids: substantiveLogIds,
+        filtered_noise_count: filteredNoiseCount,
         source_clients: uniqueClients,
         observed_window_start: windowStartIso,
         observed_window_end: windowEndIso
@@ -2392,7 +2450,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
         `UPDATE episodic_logs
          SET consolidated = 1
          WHERE log_id IN (SELECT value FROM json_each(?1))`,
-        JSON.stringify(logIds)
+        JSON.stringify(allLogIds)
       );
 
       this.sql.exec(
@@ -2407,9 +2465,9 @@ export class BrainMemoryDO extends DurableObject<Env> {
            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
            RETURNING run_id`,
           saved.id,
-          rows.length,
+          substantiveRows.length,
           JSON.stringify(uniqueClients),
-          JSON.stringify(logIds),
+          JSON.stringify(substantiveLogIds),
           digestTitle,
           digest,
           triggerSource,

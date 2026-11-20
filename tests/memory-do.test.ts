@@ -642,4 +642,106 @@ describe("BrainMemoryDO SQLite, FTS5, Governance, Guardrails & Rollback invarian
       .one().count;
     expect(logCount).toBe(3);
   });
+
+  it("filters legacy noisy MCP handshake tool_call rows out of nocturnal consolidation while draining them", async () => {
+    const state = createMockDurableObjectState();
+    let llamaConsolidationCalls = 0;
+    let capturedUserLogs = "";
+    const { env } = createMockEnv();
+    const origRun = env.AI.run.bind(env.AI);
+    env.AI = {
+      async run(model: string, input: Record<string, unknown>) {
+        if (model.includes("llama") && Array.isArray(input.messages)) {
+          const msgs = input.messages as Array<{ role: string; content: string }>;
+          if (msgs[0]?.content.includes("nocturnal memory consolidation")) {
+            llamaConsolidationCalls++;
+            capturedUserLogs = msgs[1]?.content || "";
+            return {
+              response: "## Summary\nSubstantive work consolidated.\n\n## Observed Facts\n- [episodic:4] Real change."
+            };
+          }
+        }
+        return origRun(model as never, input as never);
+      }
+    } as unknown as typeof env.AI;
+
+    const brain = new BrainMemoryDO(state as unknown as DurableObjectState, env);
+    await state.waitUntilReady();
+
+    // Case 1: Purely noisy legacy rows -> drain without invoking Llama or creating an empty digest
+    await brain.logEpisodicEvent({
+      sessionId: "brain-stateless-session",
+      clientId: "gemini-web-oauth",
+      eventType: "tool_call",
+      payload: JSON.stringify({ rpcMethod: "initialize", status: 200 })
+    });
+    await brain.logEpisodicEvent({
+      sessionId: "brain-stateless-session",
+      clientId: "gemini-web-oauth",
+      eventType: "tool_call",
+      payload: JSON.stringify({ rpcMethod: "notifications/initialized", status: 202 })
+    });
+    await brain.logEpisodicEvent({
+      sessionId: "brain-stateless-session",
+      clientId: "gemini-web-oauth",
+      eventType: "tool_call",
+      payload: JSON.stringify({ rpcMethod: "tools/list", status: 200 })
+    });
+
+    const noiseOnlyRes = await brain.runConsolidationNow("test_noise_only");
+    expect(noiseOnlyRes.consolidatedCount).toBe(3);
+    expect(noiseOnlyRes.digestMemoryId).toBeNull();
+    expect(llamaConsolidationCalls).toBe(0);
+
+    const remainingPending1 = state.sql
+      .exec<{ c: number }>(`SELECT COUNT(*) AS c FROM episodic_logs WHERE consolidated = 0`)
+      .one().c;
+    expect(remainingPending1).toBe(0);
+
+    // Case 2: Mixed noisy 2xx rows + substantive checkpoint + 500 error -> prompt excludes 2xx noise, keeps checkpoint & 500 error, drains all
+    await brain.logEpisodicEvent({
+      sessionId: "brain-stateless-session",
+      clientId: "gemini-web-oauth",
+      eventType: "tool_call",
+      payload: JSON.stringify({ rpcMethod: "initialize", status: 200 })
+    });
+    const realEv = await brain.logEpisodicEvent({
+      sessionId: "sess-real",
+      clientId: "antigravity-win11",
+      eventType: "checkpoint",
+      payload: "Deployed v1.7.2 episodic noise filter."
+    });
+    const errEv = await brain.logEpisodicEvent({
+      sessionId: "brain-stateless-session",
+      clientId: "gemini-web-oauth",
+      eventType: "tool_call",
+      payload: JSON.stringify({ rpcMethod: "tools/list", status: 500 })
+    });
+
+    const mixedRes = await brain.runConsolidationNow("test_mixed");
+    expect(mixedRes.consolidatedCount).toBe(3);
+    expect(mixedRes.digestMemoryId).toBeTruthy();
+    expect(llamaConsolidationCalls).toBe(1);
+    expect(capturedUserLogs).toContain(`[episodic:${realEv.logId}]`);
+    expect(capturedUserLogs).toContain(`[episodic:${errEv.logId}]`);
+    expect(capturedUserLogs).not.toContain('"rpcMethod":"initialize"');
+
+    const savedRow = state.sql
+      .exec<{ metadata_json: string }>(
+        `SELECT metadata_json FROM memories WHERE id = ?1`,
+        mixedRes.digestMemoryId
+      )
+      .one();
+    const meta = JSON.parse(savedRow.metadata_json) as {
+      source_log_ids: number[];
+      filtered_noise_count: number;
+    };
+    expect(meta.source_log_ids).toEqual([realEv.logId, errEv.logId]);
+    expect(meta.filtered_noise_count).toBe(1);
+
+    const remainingPending2 = state.sql
+      .exec<{ c: number }>(`SELECT COUNT(*) AS c FROM episodic_logs WHERE consolidated = 0`)
+      .one().c;
+    expect(remainingPending2).toBe(0);
+  });
 });

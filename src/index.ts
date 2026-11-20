@@ -656,6 +656,38 @@ function createBrainMcpServer(env: Env) {
 
 const BRAIN_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#0b1120"/><circle cx="32" cy="32" r="18" fill="none" stroke="#06b6d4" stroke-width="4"/><circle cx="32" cy="32" r="7" fill="#10b981"/></svg>`;
 
+const NOISY_MCP_RPC_METHODS = new Set([
+  "initialize",
+  "notifications/initialized",
+  "notifications/cancelled",
+  "notifications/roots/list_changed",
+  "tools/list",
+  "resources/list",
+  "resources/templates/list",
+  "prompts/list",
+  "ping",
+  "logging/setLevel"
+]);
+
+/**
+ * Determines whether an OAuth-authenticated MCP JSON-RPC call carries substantive signal
+ * worth persisting into episodic_logs. Protocol handshake/discovery traffic (initialize,
+ * notifications/initialized, tools/list, etc.) is skipped on 2xx responses so it does not
+ * crowd out the nocturnal consolidation window.
+ */
+export function shouldLogOAuthMcpCall(parsedBody: unknown, status: number): boolean {
+  if (status >= 400) return true;
+  if (Array.isArray(parsedBody)) {
+    if (parsedBody.length === 0) return false;
+    return parsedBody.some((item) => shouldLogOAuthMcpCall(item, status));
+  }
+  if (typeof parsedBody === "object" && parsedBody !== null && "method" in parsedBody) {
+    const method = String((parsedBody as { method?: unknown }).method || "").trim();
+    return !NOISY_MCP_RPC_METHODS.has(method);
+  }
+  return true;
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -813,13 +845,16 @@ export default {
 
     // Zero-secret OAuth / auth diagnostic logger (never records tokens, codes, or secrets)
     const logAuthDiag = (route: string, status: number, details: Record<string, unknown>) => {
+      const ua = request.headers.get("User-Agent") || "";
       const payload = JSON.stringify({
         route,
         status,
-        ua: request.headers.get("User-Agent") || "",
+        ua,
         ...details
       });
       console.log(`[auth-diag] ${payload}`);
+      // Avoid polluting episodic_logs with intentional negative checks from our automated smoke verifier
+      if (ua.startsWith("BrainMCP-Verifier/")) return;
       if (env.BRAIN_DO && typeof env.BRAIN_DO.idFromName === "function") {
         ctx.waitUntil(
           getBrainStub()
@@ -1947,14 +1982,17 @@ export default {
       "brain-stateless-session";
     respHeaders.set("Mcp-Session-Id", sessionId);
 
-    // Log OAuth-authenticated MCP calls asynchronously for live observability
-    if (provided && !isPskValid) {
-      const rpcMethod =
-        typeof parsedMcpBody === "object" &&
-        parsedMcpBody !== null &&
-        "method" in parsedMcpBody
-          ? String((parsedMcpBody as { method?: unknown }).method)
-          : "batch";
+    // Log substantive OAuth-authenticated MCP calls asynchronously (skip initialize/tools/list/handshake noise)
+    if (provided && !isPskValid && shouldLogOAuthMcpCall(parsedMcpBody, mcpResponse.status)) {
+      const rpcObj =
+        typeof parsedMcpBody === "object" && parsedMcpBody !== null && !Array.isArray(parsedMcpBody)
+          ? (parsedMcpBody as { method?: unknown; params?: { name?: unknown; uri?: unknown } })
+          : null;
+      const rpcMethod = rpcObj && "method" in rpcObj ? String(rpcObj.method) : "batch";
+      const toolName =
+        rpcMethod === "tools/call" && typeof rpcObj?.params?.name === "string"
+          ? rpcObj.params.name
+          : undefined;
       ctx.waitUntil(
         getBrainStub()
           .logEpisodicEvent({
@@ -1963,9 +2001,9 @@ export default {
             eventType: "tool_call",
             payload: JSON.stringify({
               rpcMethod,
+              ...(toolName ? { toolName } : {}),
               status: mcpResponse.status,
               ua: request.headers.get("User-Agent") || "",
-              accept: request.headers.get("Accept") || "",
               origin: request.headers.get("Origin") || ""
             })
           })

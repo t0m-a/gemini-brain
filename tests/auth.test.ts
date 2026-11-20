@@ -11,7 +11,7 @@ import {
   verifyPkceChallenge,
   verifySignedToken
 } from "../src/auth";
-import worker from "../src/index";
+import worker, { shouldLogOAuthMcpCall } from "../src/index";
 import { createMockEnv } from "./mocks/do-sqlite-adapter";
 
 const BRAIN_ORIGIN = "https://brain.tsimon.me";
@@ -432,5 +432,161 @@ describe("Worker HTTP auth & OAuth 2.1 boundary enforcement (src/index.ts)", () 
       walkKeys(tool.inputSchema, tool.name, violations);
     }
     expect(violations).toEqual([]);
+  });
+
+  it("skips episodic logging for 2xx MCP handshake/discovery RPCs while preserving tools/call and errors", async () => {
+    // Pure predicate unit checks
+    for (const method of [
+      "initialize",
+      "notifications/initialized",
+      "notifications/cancelled",
+      "notifications/roots/list_changed",
+      "tools/list",
+      "resources/list",
+      "resources/templates/list",
+      "prompts/list",
+      "ping",
+      "logging/setLevel"
+    ]) {
+      expect(shouldLogOAuthMcpCall({ jsonrpc: "2.0", id: 1, method }, 200)).toBe(false);
+      // Errors (>=400) on handshake methods MUST still be logged for diagnostics
+      expect(shouldLogOAuthMcpCall({ jsonrpc: "2.0", id: 1, method }, 500)).toBe(true);
+    }
+
+    expect(
+      shouldLogOAuthMcpCall(
+        [
+          { jsonrpc: "2.0", id: 1, method: "initialize" },
+          { jsonrpc: "2.0", id: 2, method: "tools/list" }
+        ],
+        200
+      )
+    ).toBe(false);
+    expect(shouldLogOAuthMcpCall([], 200)).toBe(false);
+    expect(
+      shouldLogOAuthMcpCall(
+        [
+          { jsonrpc: "2.0", id: 1, method: "initialize" },
+          { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "hybrid_recall" } }
+        ],
+        200
+      )
+    ).toBe(true);
+    expect(
+      shouldLogOAuthMcpCall(
+        { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "hybrid_recall" } },
+        200
+      )
+    ).toBe(true);
+    expect(shouldLogOAuthMcpCall({ jsonrpc: "2.0", id: 4, method: "resources/read" }, 200)).toBe(
+      true
+    );
+
+    // End-to-end Worker OAuth fetch check with spy on BRAIN_DO.logEpisodicEvent
+    const loggedEvents: Array<{ clientId?: string; eventType: string; payload: string }> = [];
+    const pendingWaits: Promise<unknown>[] = [];
+    const execCtx = {
+      waitUntil: (p: Promise<unknown>) => {
+        pendingWaits.push(p);
+      },
+      passThroughOnException: () => {},
+      props: {}
+    } as unknown as ExecutionContext;
+
+    const { env } = createMockEnv();
+    env.BRAIN_DO = {
+      idFromName: () => "singleton-brain-id",
+      get: () => ({
+        logEpisodicEvent: async (ev: { clientId?: string; eventType: string; payload: string }) => {
+          loggedEvents.push(ev);
+          return { logId: loggedEvents.length };
+        },
+        getOvernightDiff: async () => ({
+          hydrationMarkdown: "# Overnight Diff\nNo changes."
+        })
+      })
+    } as unknown as typeof env.BRAIN_DO;
+
+    const bat = await createSignedToken(
+      "bat",
+      { sub: "user-test", email: "thomas@tsimon.me", exp: Math.floor(Date.now() / 1000) + 3600 },
+      TEST_SECRET
+    );
+
+    // 1. Noisy 2xx handshakes should NOT write to episodic_logs
+    for (const body of [
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "gemini-web", version: "1.0" }
+        }
+      },
+      { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
+      { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }
+    ]) {
+      const r = await worker.fetch(
+        new Request(`${BRAIN_ORIGIN}/mcp`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+            Authorization: `Bearer ${bat}`
+          },
+          body: JSON.stringify(body)
+        }),
+        env,
+        execCtx
+      );
+      expect(r.status).toBeLessThan(300);
+    }
+    await Promise.allSettled(pendingWaits);
+    expect(loggedEvents).toHaveLength(0);
+
+    // 2. Substantive tools/call MUST be logged with toolName included
+    const callRes = await worker.fetch(
+      new Request(`${BRAIN_ORIGIN}/mcp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: `Bearer ${bat}`
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: { name: "get_overnight_diff", arguments: { hours: 12 } }
+        })
+      }),
+      env,
+      execCtx
+    );
+    expect(callRes.status).toBe(200);
+    await Promise.allSettled(pendingWaits);
+    expect(loggedEvents).toHaveLength(1);
+    const parsedPayload = JSON.parse(loggedEvents[0].payload) as {
+      rpcMethod: string;
+      toolName?: string;
+      status: number;
+    };
+    expect(parsedPayload.rpcMethod).toBe("tools/call");
+    expect(parsedPayload.toolName).toBe("get_overnight_diff");
+    expect(parsedPayload.status).toBe(200);
+
+    // 3. Smoke verifier UA should NOT pollute episodic_logs via logAuthDiag
+    const smokeRes = await worker.fetch(
+      new Request(`${BRAIN_ORIGIN}/authorize?redirect_uri=${encodeURIComponent("https://evil.example/cb")}`, {
+        headers: { "User-Agent": "BrainMCP-Verifier/2.0" }
+      }),
+      env,
+      execCtx
+    );
+    expect(smokeRes.status).toBe(400);
+    await Promise.allSettled(pendingWaits);
+    expect(loggedEvents).toHaveLength(1);
   });
 });
