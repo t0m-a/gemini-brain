@@ -322,4 +322,174 @@ describe("BrainMemoryDO SQLite, FTS5, Governance, Guardrails & Rollback invarian
 
     expect(recalled.compiledMarkdown).toContain("ADR-05");
   });
+
+  it("supports forgetMemory soft_retire (reversible via rollback), hard_delete (scrubs audit), and RPi5 guardrails", async () => {
+    const { brain, state, vectorIndex } = await createTestBrain();
+
+    // 1. soft_retire + rollback restoration
+    await brain.rememberFact({
+      id: "mem-soft-target",
+      namespace: "homelab",
+      title: "Temporary Staging Port",
+      content: "Staging worker ran on port 8799.",
+      triples: [
+        {
+          subjectId: "service:staging-worker",
+          subjectName: "Staging Worker",
+          relation: "LISTENS_ON",
+          objectId: "port:8799",
+          objectName: "TCP 8799"
+        }
+      ]
+    });
+
+    const soft = await brain.forgetMemory({
+      memoryId: "mem-soft-target",
+      mode: "soft_retire",
+      reason: "Decommissioned staging test port",
+      clientId: "vitest-forget"
+    });
+    expect(soft.ok).toBe(true);
+    expect(soft.mode).toBe("soft_retire");
+    expect(soft.vectorDeleted).toBe(true);
+    expect(soft.retiredEdgesCount).toBe(1);
+    expect(vectorIndex.vectors.has("mem-soft-target")).toBe(false);
+
+    const ftsAfterSoft = state.sql
+      .exec<{ id: string }>(`SELECT id FROM memories_fts WHERE id = 'mem-soft-target'`)
+      .toArray();
+    expect(ftsAfterSoft.length).toBe(0);
+
+    // Undo soft_retire via rollbackMutation -> restores memory, FTS5, vector, AND KG edge
+    const undone = await brain.rollbackMutation({ mutationId: soft.mutationId });
+    expect(undone.ok).toBe(true);
+    expect(undone.restoredEdgesCount).toBe(1);
+    expect(vectorIndex.vectors.has("mem-soft-target")).toBe(true);
+
+    // 2. hard_delete permanently removes memory, edge, and scrubs historical audit content
+    const hard = await brain.forgetMemory({
+      memoryId: "mem-soft-target",
+      mode: "hard_delete",
+      reason: "Permanent cleanup of synthetic test record"
+    });
+    expect(hard.ok).toBe(true);
+    expect(hard.mode).toBe("hard_delete");
+    expect(hard.retiredEdgesCount).toBe(1);
+
+    const remainingMem = state.sql
+      .exec<{ id: string }>(`SELECT id FROM memories WHERE id = 'mem-soft-target'`)
+      .toArray();
+    expect(remainingMem.length).toBe(0);
+
+    const scrubbedMutations = state.sql
+      .exec<{ old_content: string | null; new_content: string | null }>(
+        `SELECT old_content, new_content FROM memory_mutations WHERE memory_id = 'mem-soft-target'`
+      )
+      .toArray();
+    for (const m of scrubbedMutations) {
+      expect(m.old_content === null || m.old_content === "[HARD_DELETED]").toBe(true);
+      expect(m.new_content === null || m.new_content === "[HARD_DELETED]").toBe(true);
+    }
+
+    // 3. Protected RPi5 / Qdrant record cannot be forgotten
+    await brain.rememberFact({
+      id: "fact-node:rpi5-core",
+      namespace: "homelab",
+      title: "Raspberry Pi 5 Core State",
+      content: "node:rpi5 runs service:rpi5-qdrant-knowledge-hub."
+    });
+    const blocked = await brain.forgetMemory({
+      memoryId: "fact-node:rpi5-core",
+      mode: "hard_delete"
+    });
+    expect(blocked.ok).toBe(false);
+    expect(blocked.error).toMatch(/Safety Guardrail/i);
+  });
+
+  it("preserves [episodic:<id>] provenance, navigational confidence=0.7, and non-flattening prompt in runConsolidationNow", async () => {
+    const state = createMockDurableObjectState();
+    let capturedSystemPrompt = "";
+    let capturedUserLogs = "";
+    const { env } = createMockEnv();
+    const origRun = env.AI.run.bind(env.AI);
+    env.AI = {
+      async run(model: string, input: Record<string, unknown>) {
+        if (model.includes("llama") && Array.isArray(input.messages)) {
+          const msgs = input.messages as Array<{ role: string; content: string }>;
+          if (msgs[0]?.content.includes("nocturnal memory consolidation")) {
+            capturedSystemPrompt = msgs[0].content;
+            capturedUserLogs = msgs[1]?.content || "";
+            return {
+              response:
+                "## Summary\nHardened OAuth and fixed ADR packing.\n\n## Observed Facts\n- [episodic:1] OAuth patched.\n\n## Uncertainties\n- None."
+            };
+          }
+        }
+        return origRun(model as never, input as never);
+      }
+    } as unknown as typeof env.AI;
+
+    const brain = new BrainMemoryDO(state as unknown as DurableObjectState, env);
+    await state.waitUntilReady();
+
+    const ev1 = await brain.logEpisodicEvent({
+      sessionId: "sess-1",
+      clientId: "antigravity-win11",
+      eventType: "checkpoint",
+      payload: "Hardened OAuth token redemption against Cloudflare Access."
+    });
+    const ev2 = await brain.logEpisodicEvent({
+      sessionId: "sess-1",
+      clientId: "antigravity-win11",
+      eventType: "error_resolution",
+      payload: "Failed attempt: all-or-nothing ADR block dropped ADR-05. Fix: incremental packing."
+    });
+
+    const res = await brain.runConsolidationNow("test_suite");
+    expect(res.consolidatedCount).toBe(2);
+    expect(res.digestMemoryId).toBeTruthy();
+
+    // Prompt must pass [episodic:<id>] anchors and forbid silent contradiction resolution
+    expect(capturedUserLogs).toContain(`[episodic:${ev1.logId}]`);
+    expect(capturedUserLogs).toContain(`[episodic:${ev2.logId}]`);
+    expect(capturedSystemPrompt).toMatch(/NEVER silently resolve/i);
+    expect(capturedSystemPrompt).toMatch(/Failed Attempts/i);
+
+    const savedRow = state.sql
+      .exec<{ confidence: number; source_uri: string; metadata_json: string }>(
+        `SELECT confidence, source_uri, metadata_json FROM memories WHERE id = ?1`,
+        res.digestMemoryId
+      )
+      .one();
+    expect(savedRow.confidence).toBeCloseTo(0.7, 2);
+    expect(savedRow.source_uri).toContain(`logs=${ev1.logId},${ev2.logId}`);
+    const meta = JSON.parse(savedRow.metadata_json) as {
+      provenance_tier: string;
+      source_log_ids: number[];
+    };
+    expect(meta.provenance_tier).toBe("llm_digest");
+    expect(meta.source_log_ids).toEqual([ev1.logId, ev2.logId]);
+  });
+
+  it("formats structured rejectedOptions and revisitWhen inside logDecision ADRs", async () => {
+    const { brain } = await createTestBrain();
+
+    await brain.logDecision({
+      namespace: "homelab",
+      title: "Remote Access Overlay Choice",
+      decision: "Use Tailscale for homelab mesh access.",
+      rationale: "Works behind CGNAT with minimal ops overhead.",
+      rejectedOptions: [
+        "WireGuard port forwarding: blocked by ISP CGNAT",
+        "Cloudflare Tunnel: unsuitable for arbitrary L3 UDP traffic"
+      ],
+      revisitWhen: ["More than 20 homelab nodes", "Site-to-site BGP routing required"]
+    });
+
+    const md = await brain.getActiveDecisions("homelab");
+    expect(md).toContain("**Rejected Options**:");
+    expect(md).toContain("WireGuard port forwarding");
+    expect(md).toContain("**Revisit When**:");
+    expect(md).toContain("More than 20 homelab nodes");
+  });
 });

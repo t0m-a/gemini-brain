@@ -12,7 +12,8 @@ import {
   estimateTokens,
   fuseBrainAndKb,
   queryKbArchive,
-  type RankedCandidate
+  type RankedCandidate,
+  type ScoreExplanation
 } from "./federation";
 
 export interface Env {
@@ -54,6 +55,15 @@ export interface HybridRecallParams {
   tokenBudget?: number;
   halfLifeDays?: number;
   topK?: number;
+  explain?: boolean;
+}
+
+export interface ForgetMemoryParams {
+  memoryId: string;
+  mode?: "soft_retire" | "hard_delete";
+  reason?: string;
+  retireLinkedEdges?: boolean;
+  clientId?: string;
 }
 
 export type GraphTriple = {
@@ -293,6 +303,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
     clientId?: string;
     importance?: number;
     confidence?: number;
+    metadata?: Record<string, unknown>;
     createdAt?: number;
     triples?: Array<{
       subjectId: string;
@@ -328,6 +339,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
       clientId?: string;
       importance?: number;
       confidence?: number;
+      metadata?: Record<string, unknown>;
       createdAt?: number;
       triples?: Array<{
         subjectId: string;
@@ -358,6 +370,10 @@ export class BrainMemoryDO extends DurableObject<Env> {
           ? Math.floor(input.createdAt)
           : now;
       const clientId = inferClientId(input.clientId, input.sourceUri, memoryType);
+      const metadataJson =
+        input.metadata && typeof input.metadata === "object"
+          ? JSON.stringify(input.metadata)
+          : "{}";
       return {
         ...input,
         id,
@@ -366,7 +382,8 @@ export class BrainMemoryDO extends DurableObject<Env> {
         summary,
         tokenCount,
         eventTs,
-        clientId
+        clientId,
+        metadataJson
       };
     });
 
@@ -402,8 +419,8 @@ export class BrainMemoryDO extends DurableObject<Env> {
         this.sql.exec(
           `INSERT INTO memories (
             id, namespace, memory_type, title, content, summary, source_uri,
-            token_count, importance, confidence, created_at, updated_at, last_accessed_at
-          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12)
+            token_count, importance, confidence, metadata_json, created_at, updated_at, last_accessed_at
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13)
           ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             content = excluded.content,
@@ -412,6 +429,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
             token_count = excluded.token_count,
             importance = excluded.importance,
             confidence = excluded.confidence,
+            metadata_json = CASE WHEN excluded.metadata_json != '{}' THEN excluded.metadata_json ELSE memories.metadata_json END,
             updated_at = excluded.updated_at`,
           p.id,
           p.namespace,
@@ -423,6 +441,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
           p.tokenCount,
           p.importance ?? 0.6,
           p.confidence ?? 1.0,
+          p.metadataJson,
           p.eventTs,
           now
         );
@@ -655,6 +674,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
         rrfScore: number;
         rerankScore?: number;
         sources: string[];
+        explanation?: ScoreExplanation;
       }
     >;
     graphTriples: GraphTriple[];
@@ -766,6 +786,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
       id: row.id,
       source: "brain_fts",
       origin: "brain.tsimon.me",
+      memoryType: row.memory_type,
       title: `[${row.namespace}] ${row.title}`,
       content: row.content,
       summary: row.summary,
@@ -785,6 +806,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
         id: rec.id,
         source: "brain_vec",
         origin: "brain.tsimon.me",
+        memoryType: rec.memory_type,
         title: `[${rec.namespace}] ${rec.title}`,
         content: rec.content,
         summary: rec.summary,
@@ -886,7 +908,8 @@ export class BrainMemoryDO extends DurableObject<Env> {
       activeDecisions: activeDecisionLines,
       extraTriples,
       tokenBudget,
-      halfLifeDays: params.halfLifeDays
+      halfLifeDays: params.halfLifeDays,
+      explain: params.explain
     });
 
     // Telemetry only (not used in ranking): increment recall counters only for Brain memories
@@ -926,17 +949,35 @@ export class BrainMemoryDO extends DurableObject<Env> {
 
   /**
    * RPC Method 3: Log an Immutable Architecture Decision Record (ADR)
+   *               Optionally records rejected alternatives and explicit revisit conditions.
    */
   async logDecision(input: {
     namespace?: string;
     title: string;
     decision: string;
     rationale: string;
+    rejectedOptions?: string[];
+    revisitWhen?: string[];
     supersedesDecisionId?: string;
   }): Promise<{ decisionId: string; status: string }> {
     const decisionId = `adr_${crypto.randomUUID().slice(0, 8)}`;
     const namespace = input.namespace || this.env.DEFAULT_NAMESPACE || "global";
     const now = Math.floor(Date.now() / 1000);
+
+    const rationaleParts = [input.rationale.trim()];
+    const cleanRejected = (input.rejectedOptions ?? []).map((s) => s.trim()).filter(Boolean);
+    if (cleanRejected.length > 0) {
+      rationaleParts.push(
+        `\n**Rejected Options**:\n${cleanRejected.map((item) => `- ${item}`).join("\n")}`
+      );
+    }
+    const cleanRevisit = (input.revisitWhen ?? []).map((s) => s.trim()).filter(Boolean);
+    if (cleanRevisit.length > 0) {
+      rationaleParts.push(
+        `\n**Revisit When**:\n${cleanRevisit.map((item) => `- ${item}`).join("\n")}`
+      );
+    }
+    const fullRationale = rationaleParts.join("\n");
 
     this.ctx.storage.transactionSync(() => {
       this.sql.exec(
@@ -946,7 +987,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
         namespace,
         input.title,
         input.decision,
-        input.rationale,
+        fullRationale,
         now
       );
 
@@ -962,6 +1003,194 @@ export class BrainMemoryDO extends DurableObject<Env> {
     });
 
     return { decisionId, status: "active" };
+  }
+
+  /**
+   * RPC Method 3B: Deliberate Memory Retirement / Deletion (soft_retire or hard_delete)
+   *                Preserves RPi5/Qdrant safety guardrails, cleans Vectorize & KG edges,
+   *                and records audit trail (scrubbing content on hard_delete).
+   */
+  async forgetMemory(params: ForgetMemoryParams): Promise<{
+    ok: boolean;
+    memoryId: string;
+    mode?: "soft_retire" | "hard_delete";
+    vectorDeleted?: boolean;
+    retiredEdgesCount?: number;
+    mutationId?: number;
+    error?: string;
+  }> {
+    const memoryId = (params.memoryId || "").trim();
+    const mode = params.mode === "hard_delete" ? "hard_delete" : "soft_retire";
+    const retireLinkedEdges = params.retireLinkedEdges !== false;
+    const clientId = (params.clientId || "mcp-forget").trim();
+    const reason = (params.reason || `Deliberate ${mode} requested by operator`).trim();
+
+    if (!memoryId) {
+      return { ok: false, memoryId: "", error: "memoryId is required." };
+    }
+
+    const existing = this.sql
+      .exec<{
+        id: string;
+        namespace: string;
+        memory_type: string;
+        title: string;
+        content: string;
+        summary: string | null;
+        importance: number;
+        source_uri: string | null;
+        superseded_by: string | null;
+      }>(
+        `SELECT id, namespace, memory_type, title, content, summary, importance, source_uri, superseded_by
+         FROM memories
+         WHERE id = ?1`,
+        memoryId
+      )
+      .toArray()[0];
+
+    if (!existing) {
+      return { ok: false, memoryId, error: `Memory '${memoryId}' not found.` };
+    }
+
+    if (isProtectedInfrastructure(existing.id) || isProtectedInfrastructure(existing.title)) {
+      return {
+        ok: false,
+        memoryId,
+        error:
+          "Safety Guardrail: Raspberry Pi 5 (node:rpi5) and Qdrant (service:rpi5-qdrant-knowledge-hub) records are protected and cannot be forgotten."
+      };
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    let retiredEdgesCount = 0;
+    let mutationId: number | undefined;
+
+    this.ctx.storage.transactionSync(() => {
+      if (retireLinkedEdges) {
+        const linkedEdges = this.sql
+          .exec<{ edge_id: string }>(
+            `SELECT edge_id
+             FROM edges
+             WHERE evidence_memory_id = ?1
+               AND valid_until IS NULL`,
+            memoryId
+          )
+          .toArray()
+          .filter((e) => !isProtectedInfrastructure(e.edge_id));
+
+        if (linkedEdges.length > 0) {
+          const edgeIdsJson = JSON.stringify(linkedEdges.map((e) => e.edge_id));
+          if (mode === "hard_delete") {
+            this.sql.exec(
+              `DELETE FROM edges WHERE edge_id IN (SELECT value FROM json_each(?1))`,
+              edgeIdsJson
+            );
+          } else {
+            this.sql.exec(
+              `UPDATE edges
+               SET valid_until = ?1
+               WHERE edge_id IN (SELECT value FROM json_each(?2))`,
+              now,
+              edgeIdsJson
+            );
+          }
+          retiredEdgesCount = linkedEdges.length;
+        }
+      }
+
+      if (mode === "soft_retire") {
+        // Self-reference satisfies FK while removing from FTS5 triggers & active queries;
+        // fully reversible via rollbackMutation(mutationId) including expired KG edges.
+        this.sql.exec(
+          `UPDATE memories
+           SET superseded_by = ?1,
+               updated_at = ?2
+           WHERE id = ?1`,
+          memoryId,
+          now
+        );
+
+        const mutRow = this.sql
+          .exec<{ mutation_id: number }>(
+            `INSERT INTO memory_mutations (
+               memory_id, namespace, memory_type, operation, client_id,
+               old_title, old_content, old_summary, old_importance,
+               new_title, new_content, new_summary, new_importance,
+               source_uri, rolled_back, created_at
+             ) VALUES (?1, ?2, ?3, 'DELETE', ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12, 0, ?13)
+             RETURNING mutation_id`,
+            existing.id,
+            existing.namespace,
+            existing.memory_type,
+            clientId,
+            existing.title,
+            existing.content,
+            existing.summary,
+            existing.importance,
+            `[SOFT_RETIRED] ${existing.title}`,
+            reason.slice(0, 280),
+            existing.importance,
+            existing.source_uri,
+            now
+          )
+          .one();
+        mutationId = mutRow.mutation_id;
+      } else {
+        // Permanent erasure: clear any self/incoming superseded_by FK refs, delete row, and scrub audit text
+        this.sql.exec(
+          `UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?1`,
+          memoryId
+        );
+        this.sql.exec(`DELETE FROM memories WHERE id = ?1`, memoryId);
+        this.sql.exec(
+          `UPDATE memory_mutations
+           SET old_content = CASE WHEN old_content IS NOT NULL THEN '[HARD_DELETED]' ELSE NULL END,
+               new_content = CASE WHEN new_content IS NOT NULL THEN '[HARD_DELETED]' ELSE NULL END,
+               old_summary = CASE WHEN old_summary IS NOT NULL THEN '[HARD_DELETED]' ELSE NULL END,
+               new_summary = CASE WHEN new_summary IS NOT NULL THEN '[HARD_DELETED]' ELSE NULL END
+           WHERE memory_id = ?1`,
+          memoryId
+        );
+        const mutRow = this.sql
+          .exec<{ mutation_id: number }>(
+            `INSERT INTO memory_mutations (
+               memory_id, namespace, memory_type, operation, client_id,
+               old_title, old_content, old_summary, old_importance,
+               new_title, new_content, new_summary, new_importance,
+               source_uri, rolled_back, created_at
+             ) VALUES (?1, ?2, ?3, 'DELETE', ?4, ?5, NULL, NULL, ?6, '[HARD_DELETED]', NULL, ?7, 0, ?8, 0, ?9)
+             RETURNING mutation_id`,
+            existing.id,
+            existing.namespace,
+            existing.memory_type,
+            clientId,
+            existing.title,
+            existing.importance,
+            reason.slice(0, 280),
+            existing.source_uri,
+            now
+          )
+          .one();
+        mutationId = mutRow.mutation_id;
+      }
+    });
+
+    let vectorDeleted = false;
+    try {
+      await this.env.VECTOR_INDEX.deleteByIds([memoryId]);
+      vectorDeleted = true;
+    } catch {
+      vectorDeleted = false;
+    }
+
+    return {
+      ok: true,
+      memoryId,
+      mode,
+      vectorDeleted,
+      retiredEdgesCount,
+      mutationId
+    };
   }
 
   /**
@@ -1618,7 +1847,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
     const formattedLogs = rows
       .map(
         (r) =>
-          `[${new Date(r.created_at * 1000).toISOString()}] client=${r.client_id} session=${r.session_id} type=${r.event_type}\n${r.payload}`
+          `[episodic:${r.log_id}] [${new Date(r.created_at * 1000).toISOString()}] client=${r.client_id} session=${r.session_id} type=${r.event_type}\n${r.payload}`
       )
       .join("\n\n---\n\n");
 
@@ -1629,7 +1858,13 @@ export class BrainMemoryDO extends DurableObject<Env> {
           {
             role: "system",
             content:
-              "You are the nocturnal memory consolidation engine for a cross-client engineering brain. Synthesize the raw episodic logs into a structured Markdown digest containing: (1) a concise 2-sentence summary, (2) key technical facts and architectural observations, and (3) resolved errors and debugging lessons. Deduplicate redundant events and resolve contradictions."
+              "You are the nocturnal memory consolidation engine for a cross-client engineering brain. " +
+              "Your digest is a navigational layer — NOT authoritative truth — and MUST preserve provenance. " +
+              "Synthesize the raw episodic logs into structured Markdown with 4 sections:\n" +
+              "1. **Summary** (2 concise sentences).\n" +
+              "2. **Observed Facts & Architectural Changes** — cite the exact `[episodic:<log_id>]` and UTC date/time for every claim.\n" +
+              "3. **Troubleshooting & Failed Attempts** — preserve both failed hypotheses/attempts and verified fixes with `[episodic:<log_id>]` citations.\n" +
+              "4. **Uncertainties & Potential Contradictions** — NEVER silently resolve or flatten conflicting claims; explicitly report both sides with their `[episodic:<log_id>]` IDs so the downstream governance auditor can triage them."
           },
           {
             role: "user",
@@ -1641,23 +1876,39 @@ export class BrainMemoryDO extends DurableObject<Env> {
       } as never
     )) as unknown as { response?: string };
 
+    const logIds = rows.map((r) => r.log_id);
+    const uniqueClients = Array.from(new Set(rows.map((r) => r.client_id)));
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const windowStartIso = new Date(rows[0].created_at * 1000).toISOString();
+    const windowEndIso = new Date(rows[rows.length - 1].created_at * 1000).toISOString();
+
     const digest =
       aiResult?.response?.trim() ||
-      `Consolidated ${rows.length} episodic events across sessions.`;
-    const digestTitle =
-      "Daily Consolidated Episodic Digest " + new Date().toISOString().slice(0, 10);
+      `Consolidated ${rows.length} episodic events (${logIds.map((id) => `[episodic:${id}]`).join(", ")}).`;
+    const digestTitle = `Daily Consolidated Episodic Digest ${dateStr}`;
+    const logIdsQuery = logIds.slice(0, 25).join(",");
+    const digestSourceUri = `brain://consolidation/${dateStr}?logs=${logIdsQuery}${logIds.length > 25 ? `(+${logIds.length - 25})` : ""}`;
 
+    // Store nocturnal digest as a navigational summary tier (confidence=0.7) with explicit provenance metadata
     const saved = await this.rememberFact({
       namespace: "global",
       memoryType: "episodic_summary",
       title: digestTitle,
       content: digest,
+      sourceUri: digestSourceUri,
       clientId: triggerSource === "alarm_0300" ? "nocturnal-consolidator" : "manual-consolidator",
-      importance: 0.75
+      importance: 0.72,
+      confidence: 0.7,
+      metadata: {
+        provenance_tier: "llm_digest",
+        trigger_source: triggerSource,
+        source_log_ids: logIds,
+        source_clients: uniqueClients,
+        observed_window_start: windowStartIso,
+        observed_window_end: windowEndIso
+      }
     });
 
-    const logIds = rows.map((r) => r.log_id);
-    const uniqueClients = Array.from(new Set(rows.map((r) => r.client_id)));
     const now = Math.floor(Date.now() / 1000);
     let runId: number | null = null;
 

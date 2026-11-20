@@ -43,7 +43,42 @@ function createBrainMcpServer(env: Env) {
     return env.BRAIN_DO.get(id);
   };
 
-  // Tool 1 (Alphabetical Order #1): get_overnight_diff
+  // Tool 1 (Alphabetical Order #1): forget_memory
+  server.registerTool(
+    "forget_memory",
+    {
+      description:
+        "Deliberately retire or permanently erase a stale, incorrect, or synthetic memory from SQLite, FTS5, Vectorize, and linked non-protected Knowledge Graph edges. 'soft_retire' is reversible via rollback; 'hard_delete' permanently erases the row and scrubs historical audit content.",
+      inputSchema: z.object({
+        memoryId: z.string().describe("Exact ID of the memory to retire or delete"),
+        mode: z
+          .enum(["soft_retire", "hard_delete"])
+          .optional()
+          .describe("'soft_retire' (default, reversible via rollback) or 'hard_delete' (permanent erasure + audit scrub)"),
+        reason: z
+          .string()
+          .optional()
+          .describe("Concise explanation recorded in the mutation audit trail"),
+        retireLinkedEdges: z
+          .boolean()
+          .optional()
+          .describe("Expire/remove non-protected KG edges backed solely by this memory (default: true)"),
+        clientId: z
+          .string()
+          .optional()
+          .describe("Client identifier recording the deletion (default: 'mcp-forget')")
+      })
+    },
+    async (args) => {
+      const stub = getBrainStub();
+      const result = await stub.forgetMemory(args);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
+      };
+    }
+  );
+
+  // Tool 2 (Alphabetical Order #2): get_overnight_diff
   server.registerTool(
     "get_overnight_diff",
     {
@@ -120,7 +155,11 @@ function createBrainMcpServer(env: Env) {
           .min(1)
           .max(365)
           .optional()
-          .describe("Temporal decay half-life in days (default: 30)")
+          .describe("Temporal decay half-life in days (default: 30)"),
+        explain: z
+          .boolean()
+          .optional()
+          .describe("Include per-candidate ranking decomposition (<recall_explanation>) with channel ranks, decay, confidence, and reranker boosts")
       })
     },
     async (args) => {
@@ -132,17 +171,25 @@ function createBrainMcpServer(env: Env) {
     }
   );
 
-  // Tool 3 (Alphabetical Order #3): log_decision
+  // Tool 4 (Alphabetical Order #4): log_decision
   server.registerTool(
     "log_decision",
     {
       description:
-        "Record an Architecture Decision Record (ADR) in SQLite and optionally deprecate a superseded decision.",
+        "Record an Architecture Decision Record (ADR) in SQLite with rationale, optional rejected alternatives, and revisit triggers; optionally deprecate a superseded decision.",
       inputSchema: z.object({
         title: z.string().describe("Short title of the architectural decision"),
         decision: z.string().describe("Exact specification or rule decided"),
         rationale: z.string().describe("Engineering justification and trade-offs"),
         namespace: z.string().optional().describe("Target project namespace"),
+        rejectedOptions: z
+          .array(z.string())
+          .optional()
+          .describe("Alternative options considered and why each was rejected"),
+        revisitWhen: z
+          .array(z.string())
+          .optional()
+          .describe("Explicit conditions or scale thresholds that should trigger revisiting this ADR"),
         supersedesDecisionId: z
           .string()
           .optional()
@@ -447,8 +494,10 @@ function createBrainMcpServer(env: Env) {
               `Checkpoint the current coding session for project "${project}".\n\n` +
               `Session Summary:\n${summary}\n\n` +
               `Please execute the following context engineering actions:\n` +
-              `1. Invoke \`log_episodic_event\` with \`eventType: "checkpoint"\` to record this session summary for the nocturnal 03:00 AM consolidation cycle.\n` +
-              `2. Invoke \`remember_fact\` (and \`log_decision\` where applicable) for all architectural decisions and permanent technical facts established during this coding session under namespace "${project}".`
+              `1. Invoke \`log_episodic_event\` with \`eventType: "checkpoint"\` summarizing the workspace, verified outcomes, and any failed attempts.\n` +
+              `2. For resolved bugs or infrastructure incidents, invoke \`remember_fact\` under namespace "${project}" using the structured troubleshooting template: **symptom**, **environment**, **root_cause**, **failed_attempts** (explicitly record what did NOT work), **corrective_action**, **verification**, and **prevention**.\n` +
+              `3. For durable architectural choices or operational invariants, invoke \`log_decision\` with \`decision\`, \`rationale\`, \`rejectedOptions\` (why alternatives were rejected), and \`revisitWhen\` (conditions to reconsider).\n` +
+              `4. For working preferences, include explicit **scope**, **exceptions**, and calibrated \`confidence\` (never store unqualified absolutes).`
           }
         }
       ]
@@ -1185,6 +1234,7 @@ export default {
             "kb.tsimon.me (D1 archive-knowledge-db + archive-kb-index 768-dim)"
           ],
           tools: [
+            "forget_memory",
             "get_overnight_diff",
             "hybrid_recall",
             "log_decision",
@@ -1356,6 +1406,18 @@ export default {
             typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
         });
         return Response.json(resolveRes, { status: 200, headers: corsHeaders });
+      }
+
+      if (action === "forget") {
+        const forgetRes = await stub.forgetMemory({
+          memoryId: typeof body.memoryId === "string" ? body.memoryId : "",
+          mode: body.mode === "hard_delete" ? "hard_delete" : "soft_retire",
+          reason: typeof body.reason === "string" ? body.reason : undefined,
+          retireLinkedEdges: body.retireLinkedEdges !== false,
+          clientId:
+            typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
+        });
+        return Response.json(forgetRes, { status: 200, headers: corsHeaders });
       }
     }
 
@@ -1544,6 +1606,14 @@ export default {
         BrainMemoryDO["resolveMemoryConflict"]
       >[0];
       const result = await getBrainStub().resolveMemoryConflict(body);
+      return Response.json(result, { status: result.ok ? 200 : 400 });
+    }
+
+    if (request.method === "POST" && url.pathname === "/audit/forget") {
+      const body = (await request.json().catch(() => ({}))) as Parameters<
+        BrainMemoryDO["forgetMemory"]
+      >[0];
+      const result = await getBrainStub().forgetMemory(body);
       return Response.json(result, { status: result.ok ? 200 : 400 });
     }
 

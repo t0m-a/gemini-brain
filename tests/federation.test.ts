@@ -250,4 +250,45 @@ describe("fuseBrainAndKb() ranking, decay, confidence, reranking & token packing
     expect(res.graphTriplesCount).toBeGreaterThan(0);
     expect(res.graphTriplesCount).toBeLessThan(15);
   });
+
+  it("badges episodic_summary memories as [BRAIN] [DIGEST] and appends <recall_explanation> when explain=true", async () => {
+    const nowMs = Date.now();
+    const digestCand = makeCandidate({
+      id: "digest-2026-11-20",
+      memoryType: "episodic_summary",
+      title: "[global] Daily Consolidated Episodic Digest 2026-11-20",
+      content: "Summary citing [episodic:368] and [episodic:369].",
+      importance: 0.72,
+      confidence: 0.7,
+      updatedAtMs: nowMs
+    });
+    const factCand = makeCandidate({
+      id: "fact-1",
+      memoryType: "semantic",
+      title: "[homelab] Authoritative Fact",
+      content: "Direct operator fact.",
+      importance: 0.9,
+      confidence: 1.0,
+      updatedAtMs: nowMs
+    });
+
+    const res = await fuseBrainAndKb({
+      brainFts: [factCand, digestCand],
+      brainVec: [factCand],
+      kbFts: [],
+      kbVec: [],
+      tokenBudget: 1200,
+      halfLifeDays: 45,
+      explain: true
+    });
+
+    expect(res.totalTokens).toBeLessThanOrEqual(1200);
+    expect(res.contextBlock).toContain("[BRAIN] [DIGEST]");
+    expect(res.contextBlock).toContain("<recall_explanation");
+    expect(res.contextBlock).toContain("brain_fts=#1, brain_vec=#1");
+    expect(res.contextBlock).toContain("hl=45d");
+    expect(res.candidates[0].explanation?.channels).toEqual({ brain_fts: 1, brain_vec: 1 });
+    expect(res.candidates[0].explanation?.modifiers.halfLifeDays).toBe(45);
+    expect(res.candidates[0].explanation?.packedMode).toBe("full");
+  });
 });

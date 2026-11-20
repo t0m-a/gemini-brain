@@ -9,7 +9,7 @@
  *          5. Nocturnal 03:00 AM Sleep Cycle, Episodic Queue & Before/After Mutation Diff Viewer with 1-Click Rollback
  */
 
-export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.5.1"): string {
+export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.6.0"): string {
   return `<!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
@@ -2160,13 +2160,14 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.5.
                 (c, idx) => \`
                 <div style="background:var(--bg-0); border:1px solid var(--border); border-radius:8px; padding:9px 11px; margin-bottom:7px;">
                   <div style="display:flex; justify-content:space-between; gap:6px; align-items:center;">
-                    <strong style="font-size:12px; color:var(--text-0);">#\${idx + 1} \${escapeHtml(c.title)}</strong>
+                    <strong style="font-size:12px; color:var(--text-0);">#\${idx + 1} \${escapeHtml(c.title)} \${c.memoryType === 'episodic_summary' ? '<span class="badge badge-amber" style="font-size:9.5px; margin-left:4px;">DIGEST</span>' : ''}</strong>
                     <span class="badge \${c.origin === 'brain.tsimon.me' ? 'badge-cyan' : 'badge-violet'}">\${escapeHtml(c.origin)}</span>
                   </div>
                   <div style="font-size:11px; font-family:var(--font-mono); color:var(--text-2); margin-top:5px; display:flex; flex-wrap:wrap; gap:8px;">
-                    <span>RRF: <strong style="color:var(--emerald);">\${Number(c.rrfScore || 0).toFixed(4)}</strong></span>
+                    <span>Score: <strong style="color:var(--emerald);">\${Number(c.rrfScore || 0).toFixed(4)}</strong></span>
                     \${c.rerankScore !== undefined ? \`<span>Reranker: <strong style="color:var(--cyan);">\${Number(c.rerankScore).toFixed(3)}</strong></span>\` : ""}
                     <span>Signals: <strong>\${escapeHtml((c.sources || [c.source]).join("+"))}</strong></span>
+                    \${c.explanation?.modifiers ? \`<span>Imp:<strong>\${c.explanation.modifiers.importance}</strong> Conf:<strong>\${c.explanation.modifiers.confidence}</strong> Decay:<strong>\${c.explanation.modifiers.decayFactor}</strong> (\${c.explanation.modifiers.ageDays}d)</span>\` : ""}
                   </div>
                 </div>
               \`
