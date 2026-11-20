@@ -291,4 +291,72 @@ describe("fuseBrainAndKb() ranking, decay, confidence, reranking & token packing
     expect(res.candidates[0].explanation?.modifiers.halfLifeDays).toBe(45);
     expect(res.candidates[0].explanation?.packedMode).toBe("full");
   });
+
+  it("prevents near-zero-rerank cross-origin KB noise (< 0.15) from hijacking slot #2 while keeping relevant KB leaders", async () => {
+    const nowMs = Date.now();
+    const brain1 = makeCandidate({ id: "b1", title: "Primary Brain Answer", updatedAtMs: nowMs });
+    const brain2 = makeCandidate({ id: "b2", title: "Secondary Brain Answer", updatedAtMs: nowMs });
+    const noisyKb = makeCandidate({
+      id: "Docs/Unrelated.md",
+      source: "kb_vec",
+      origin: "kb.tsimon.me",
+      title: "Unrelated Archive Doc",
+      uri: "https://kb.tsimon.me/doc/Unrelated.md",
+      updatedAtMs: nowMs
+    });
+
+    // Case 1: KB candidate scores 0.004 (noise) -> must NOT jump ahead of Brain #2 (0.85)
+    const noisyEnv = {
+      AI: {
+        async run() {
+          return {
+            response: [
+              { id: 0, score: 0.95 }, // b1
+              { id: 1, score: 0.85 }, // b2
+              { id: 2, score: 0.004 } // noisyKb
+            ]
+          };
+        }
+      }
+    } as unknown as Env;
+
+    const rNoisy = await fuseBrainAndKb({
+      env: noisyEnv,
+      query: "brain only question",
+      brainFts: [brain1, brain2],
+      brainVec: [brain1, brain2],
+      kbFts: [],
+      kbVec: [noisyKb],
+      tokenBudget: 1500
+    });
+    expect(rNoisy.candidates[0].id).toBe("brain:b1");
+    expect(rNoisy.candidates[1].id).toBe("brain:b2");
+
+    // Case 2: KB candidate scores 0.82 (genuinely relevant) -> promoted into top 2
+    const relevantEnv = {
+      AI: {
+        async run() {
+          return {
+            response: [
+              { id: 0, score: 0.95 }, // b1
+              { id: 1, score: 0.55 }, // b2
+              { id: 2, score: 0.82 } // relevant Kb
+            ]
+          };
+        }
+      }
+    } as unknown as Env;
+
+    const rRelevant = await fuseBrainAndKb({
+      env: relevantEnv,
+      query: "federated archive question",
+      brainFts: [brain1, brain2],
+      brainVec: [brain1, brain2],
+      kbFts: [],
+      kbVec: [noisyKb],
+      tokenBudget: 1500
+    });
+    expect(rRelevant.candidates[0].id).toBe("brain:b1");
+    expect(rRelevant.candidates[1].id).toBe("kb:Docs/Unrelated.md");
+  });
 });

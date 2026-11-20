@@ -241,7 +241,66 @@ function createBrainMcpServer(env: Env) {
     }
   );
 
-  // Tool 5 (Alphabetical Order #5): remember_fact
+  // Tool 6 (Alphabetical Order #6): record_outcome
+  server.registerTool(
+    "record_outcome",
+    {
+      description:
+        "Record a first-class task outcome (attempted task, observed result, status, failed_attempts, verifier, and cited memories) at the conclusion of substantive work. Only adjusts cited memory confidence conservatively when backed by an explicit verifier or operatorFeedback.",
+      inputSchema: z.object({
+        outcomeId: z
+          .string()
+          .optional()
+          .describe("Optional deterministic outcome ID for idempotent updates"),
+        sessionId: z.string().describe("Active conversation or session UUID"),
+        namespace: z
+          .string()
+          .optional()
+          .describe("Target namespace ('global', 'tsimon.me', 'minkalab.net', 'homelab', 'ai-research', 'career')"),
+        taskType: z
+          .string()
+          .describe("Task category (e.g., 'bug_fix', 'architecture', 'deployment', 'audit', 'research', 'ops')"),
+        query: z.string().describe("Concise description of the problem or task attempted"),
+        status: z
+          .enum(["success", "partial", "failure", "abandoned"])
+          .describe("Verified outcome status"),
+        resultSummary: z.string().describe("Observed empirical result and verification outcome"),
+        failedAttempts: z
+          .string()
+          .optional()
+          .describe("Explicit record of hypotheses, approaches, or commands that did NOT work"),
+        citedMemoryIds: z
+          .array(z.string())
+          .optional()
+          .describe("Optional Brain memory IDs that directly influenced the outcome"),
+        verifier: z
+          .string()
+          .optional()
+          .describe("Objective verifier (e.g., 'vitest', 'eval/run_eval.py', 'wrangler deploy', 'operator')"),
+        evidenceUri: z
+          .string()
+          .optional()
+          .describe("Optional commit SHA, PR URL, log URI, or artifact path"),
+        operatorFeedback: z
+          .union([z.literal(-1), z.literal(0), z.literal(1)])
+          .optional()
+          .describe("Optional explicit operator rating: -1 (harmful/stale), 0 (neutral), +1 (helpful)"),
+        clientId: z
+          .string()
+          .optional()
+          .describe("Client identifier (default: 'mcp-outcome')")
+      })
+    },
+    async (args) => {
+      const stub = getBrainStub();
+      const result = await stub.recordOutcome(args);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
+      };
+    }
+  );
+
+  // Tool 7 (Alphabetical Order #7): remember_fact
   server.registerTool(
     "remember_fact",
     {
@@ -393,6 +452,49 @@ function createBrainMcpServer(env: Env) {
     }
   );
 
+  // Tool 9 (Alphabetical Order #9): validate_memory
+  server.registerTool(
+    "validate_memory",
+    {
+      description:
+        "Attach empirical verification evidence to an existing memory ('confirmed', 'weakened', or 'invalid'), updating epistemic confidence, freshness (on confirmation), and the immutable memory_validations audit log.",
+      inputSchema: z.object({
+        memoryId: z.string().describe("Exact ID of the memory to validate"),
+        verdict: z
+          .enum(["confirmed", "weakened", "invalid"])
+          .describe("'confirmed' boosts confidence & refreshes decay; 'weakened' reduces confidence; 'invalid' drops confidence to 0.05"),
+        evidenceUri: z
+          .string()
+          .optional()
+          .describe("URI, commit hash, command output reference, or doc link supporting the verdict"),
+        notes: z
+          .string()
+          .optional()
+          .describe("Concise explanation of what was verified or invalidated"),
+        observedAt: z
+          .number()
+          .int()
+          .optional()
+          .describe("Optional Unix epoch timestamp (seconds) when evidence was observed"),
+        autoRetireOnInvalid: z
+          .boolean()
+          .optional()
+          .describe("If true and verdict is 'invalid', also soft-retire the memory (default: false)"),
+        clientId: z
+          .string()
+          .optional()
+          .describe("Client identifier recording the validation (default: 'mcp-validate')")
+      })
+    },
+    async (args) => {
+      const stub = getBrainStub();
+      const result = await stub.validateMemory(args);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
+      };
+    }
+  );
+
   // Resource 1: brain://decisions/active
   server.registerResource(
     "active-decisions",
@@ -497,7 +599,8 @@ function createBrainMcpServer(env: Env) {
               `1. Invoke \`log_episodic_event\` with \`eventType: "checkpoint"\` summarizing the workspace, verified outcomes, and any failed attempts.\n` +
               `2. For resolved bugs or infrastructure incidents, invoke \`remember_fact\` under namespace "${project}" using the structured troubleshooting template: **symptom**, **environment**, **root_cause**, **failed_attempts** (explicitly record what did NOT work), **corrective_action**, **verification**, and **prevention**.\n` +
               `3. For durable architectural choices or operational invariants, invoke \`log_decision\` with \`decision\`, \`rationale\`, \`rejectedOptions\` (why alternatives were rejected), and \`revisitWhen\` (conditions to reconsider).\n` +
-              `4. For working preferences, include explicit **scope**, **exceptions**, and calibrated \`confidence\` (never store unqualified absolutes).`
+              `4. For working preferences, include explicit **scope**, **exceptions**, and calibrated \`confidence\` (never store unqualified absolutes).\n` +
+              `5. Invoke \`record_outcome\` with verified \`status\`, \`verifier\`, \`failedAttempts\`, and any \`citedMemoryIds\` that materially helped (or invoke \`validate_memory\` on any recalled fact confirmed or caught stale during the session).`
           }
         }
       ]
@@ -1239,8 +1342,10 @@ export default {
             "hybrid_recall",
             "log_decision",
             "log_episodic_event",
+            "record_outcome",
             "remember_fact",
-            "resolve_conflict"
+            "resolve_conflict",
+            "validate_memory"
           ]
         },
         { status: 200, headers: corsHeaders }
@@ -1418,6 +1523,39 @@ export default {
             typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
         });
         return Response.json(forgetRes, { status: 200, headers: corsHeaders });
+      }
+
+      if (action === "outcomes") {
+        const outRes = await stub.getOutcomes({
+          namespace: typeof body.namespace === "string" ? body.namespace : undefined,
+          status:
+            body.status === "success" ||
+            body.status === "partial" ||
+            body.status === "failure" ||
+            body.status === "abandoned"
+              ? body.status
+              : "all",
+          hours: typeof body.hours === "number" ? body.hours : 720,
+          limit: typeof body.limit === "number" ? body.limit : 40
+        });
+        return Response.json({ ok: true, ...outRes }, { status: 200, headers: corsHeaders });
+      }
+
+      if (action === "validate") {
+        const verdict =
+          body.verdict === "confirmed" || body.verdict === "weakened" || body.verdict === "invalid"
+            ? body.verdict
+            : "confirmed";
+        const valRes = await stub.validateMemory({
+          memoryId: typeof body.memoryId === "string" ? body.memoryId : "",
+          verdict,
+          evidenceUri: typeof body.evidenceUri === "string" ? body.evidenceUri : undefined,
+          notes: typeof body.notes === "string" ? body.notes : undefined,
+          autoRetireOnInvalid: body.autoRetireOnInvalid === true,
+          clientId:
+            typeof body.clientId === "string" ? body.clientId : "dashboard-noc-operator"
+        });
+        return Response.json(valRes, { status: 200, headers: corsHeaders });
       }
     }
 
@@ -1614,6 +1752,37 @@ export default {
         BrainMemoryDO["forgetMemory"]
       >[0];
       const result = await getBrainStub().forgetMemory(body);
+      return Response.json(result, { status: result.ok ? 200 : 400 });
+    }
+
+    if (url.pathname === "/audit/outcomes") {
+      if (request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as Parameters<
+          BrainMemoryDO["recordOutcome"]
+        >[0];
+        if (!body.sessionId || !body.taskType || !body.query || !body.status || !body.resultSummary) {
+          return Response.json(
+            { ok: false, error: "sessionId, taskType, query, status, and resultSummary are required." },
+            { status: 400 }
+          );
+        }
+        const result = await getBrainStub().recordOutcome(body);
+        return Response.json(result);
+      }
+      const list = await getBrainStub().getOutcomes({
+        namespace: url.searchParams.get("namespace") ?? undefined,
+        status: (url.searchParams.get("status") as "success" | "partial" | "failure" | "abandoned" | "all") || "all",
+        hours: url.searchParams.get("hours") ? Number(url.searchParams.get("hours")) : 720,
+        limit: url.searchParams.get("limit") ? Number(url.searchParams.get("limit")) : 40
+      });
+      return Response.json({ ok: true, ...list });
+    }
+
+    if (request.method === "POST" && url.pathname === "/audit/validate") {
+      const body = (await request.json().catch(() => ({}))) as Parameters<
+        BrainMemoryDO["validateMemory"]
+      >[0];
+      const result = await getBrainStub().validateMemory(body);
       return Response.json(result, { status: result.ok ? 200 : 400 });
     }
 

@@ -111,6 +111,7 @@ export interface KbArchiveIngestItem {
 
 const RRF_K = 60;
 const DEFAULT_HALF_LIFE_DAYS = 30;
+const MIN_LEADER_RERANK_SCORE = 0.15;
 
 export function parseIsoToMs(iso?: string | null): number | null {
   if (!iso || typeof iso !== "string") return null;
@@ -682,8 +683,9 @@ export async function fuseBrainAndKb(params: {
   let kbCount = 0;
 
   // When Stage-2 Cross-Encoder reranking succeeded, trust the reranker and only guarantee
-  // the #1 post-rerank Brain & KB winners so neither federated pool starves the other without
-  // letting noisy raw pre-rerank #1 channel hits override the neural reranker.
+  // the #1 post-rerank Brain & KB winners if their reranker score clears MIN_LEADER_RERANK_SCORE,
+  // preventing near-zero-relevance cross-origin noise (e.g., rerank=0.003) from hijacking slot #2.
+  // Low-scoring hits still remain in finalRanked at their natural score.
   // When reranking is unavailable, fall back to guaranteeing #1 from each of the 4 signal channels.
   const findById = (prefix: "brain" | "kb", rawId?: string) =>
     rawId ? finalRanked.find((d) => d.id === `${prefix}:${rawId}`) : undefined;
@@ -693,9 +695,19 @@ export async function fuseBrainAndKb(params: {
   );
   const topRerankedKb = finalRanked.find((d) => d.origin === "kb.tsimon.me");
 
+  const passesLeaderFloor = (doc?: FusedCandidate) =>
+    Boolean(
+      doc &&
+        typeof doc.rerankScore === "number" &&
+        doc.rerankScore >= MIN_LEADER_RERANK_SCORE
+    );
+
   const topSignalLeaders = (
     reranked
-      ? [topRerankedBrain, topRerankedKb]
+      ? [
+          passesLeaderFloor(topRerankedBrain) ? topRerankedBrain : undefined,
+          passesLeaderFloor(topRerankedKb) ? topRerankedKb : undefined
+        ]
       : [
           topRerankedBrain,
           topRerankedKb,

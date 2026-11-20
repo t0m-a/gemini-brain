@@ -149,8 +149,11 @@ describe("Worker HTTP auth & OAuth 2.1 boundary enforcement (src/index.ts)", () 
     expect(cardRes.status).toBe(200);
     const card = (await cardRes.json()) as { version: string; tools: string[] };
     expect(card.version).toBe(BRAIN_VERSION);
+    expect(card.tools).toHaveLength(9);
     expect(card.tools).toContain("forget_memory");
     expect(card.tools).toContain("hybrid_recall");
+    expect(card.tools).toContain("record_outcome");
+    expect(card.tools).toContain("validate_memory");
     // ADR-02 invariant: MCP tools must remain in strict alphabetical order
     expect(card.tools).toEqual([...card.tools].sort());
 

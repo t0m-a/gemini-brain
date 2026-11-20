@@ -66,6 +66,74 @@ export interface ForgetMemoryParams {
   clientId?: string;
 }
 
+export type OutcomeStatus = "success" | "partial" | "failure" | "abandoned";
+
+export type OutcomeRow = {
+  outcome_id: string;
+  session_id: string;
+  namespace: string;
+  task_type: string;
+  query: string;
+  status: OutcomeStatus;
+  result_summary: string;
+  failed_attempts: string | null;
+  cited_memory_ids_json: string;
+  verifier: string | null;
+  evidence_uri: string | null;
+  operator_feedback: number | null;
+  client_id: string;
+  created_at: number;
+};
+
+export interface RecordOutcomeParams {
+  outcomeId?: string;
+  sessionId: string;
+  namespace?: string;
+  taskType: string;
+  query: string;
+  status: OutcomeStatus;
+  resultSummary: string;
+  failedAttempts?: string;
+  citedMemoryIds?: string[];
+  verifier?: string;
+  evidenceUri?: string;
+  operatorFeedback?: -1 | 0 | 1;
+  clientId?: string;
+  logEpisodic?: boolean;
+}
+
+export interface GetOutcomesParams {
+  namespace?: string;
+  status?: OutcomeStatus | "all";
+  hours?: number;
+  limit?: number;
+}
+
+export type ValidationVerdict = "confirmed" | "weakened" | "invalid";
+
+export type MemoryValidationRow = {
+  validation_id: number;
+  memory_id: string;
+  verdict: ValidationVerdict;
+  previous_confidence: number | null;
+  new_confidence: number | null;
+  evidence_uri: string | null;
+  notes: string | null;
+  client_id: string;
+  observed_at: number;
+  created_at: number;
+};
+
+export interface ValidateMemoryParams {
+  memoryId: string;
+  verdict: ValidationVerdict;
+  evidenceUri?: string;
+  notes?: string;
+  observedAt?: number;
+  autoRetireOnInvalid?: boolean;
+  clientId?: string;
+}
+
 export type GraphTriple = {
   subject_name: string;
   relation: string;
@@ -253,13 +321,35 @@ export class BrainMemoryDO extends DurableObject<Env> {
     super(ctx, env);
     this.sql = ctx.storage.sql;
 
-    // Initialize embedded SQLite schema atomically before handling requests
+    // Initialize embedded SQLite schema & idempotent column migrations atomically before handling requests
     ctx.blockConcurrencyWhile(async () => {
       ctx.storage.transactionSync(() => {
         this.sql.exec(SCHEMA_DDL);
+        this.ensureSchemaMigrations();
       });
       await this.ensureAlarmScheduled();
     });
+  }
+
+  /**
+   * Idempotent schema migrations for live Durable Objects created prior to v1.7.0.
+   */
+  private ensureSchemaMigrations(): void {
+    const existingCols = new Set(
+      this.sql
+        .exec<{ name: string }>(`PRAGMA table_info(memories)`)
+        .toArray()
+        .map((c) => c.name)
+    );
+    if (!existingCols.has("validated_count")) {
+      this.sql.exec(`ALTER TABLE memories ADD COLUMN validated_count INTEGER NOT NULL DEFAULT 0`);
+    }
+    if (!existingCols.has("invalidated_count")) {
+      this.sql.exec(`ALTER TABLE memories ADD COLUMN invalidated_count INTEGER NOT NULL DEFAULT 0`);
+    }
+    if (!existingCols.has("last_validated_at")) {
+      this.sql.exec(`ALTER TABLE memories ADD COLUMN last_validated_at INTEGER`);
+    }
   }
 
   /**
@@ -1194,6 +1284,350 @@ export class BrainMemoryDO extends DurableObject<Env> {
   }
 
   /**
+   * RPC Method 3C: Record a First-Class Task Outcome (Attempted Plan + Observed Result + Failed Attempts)
+   *                Only adjusts cited memory confidence conservatively when explicitly verified
+   *                (verifier or operatorFeedback present), preventing noisy LLM self-attribution loops.
+   */
+  async recordOutcome(params: RecordOutcomeParams): Promise<{
+    ok: boolean;
+    outcomeId: string;
+    status: OutcomeStatus;
+    updatedMemoryIds: string[];
+    episodicLogId?: number;
+  }> {
+    const now = Math.floor(Date.now() / 1000);
+    const outcomeId = (params.outcomeId || `out_${crypto.randomUUID().slice(0, 12)}`).slice(0, 64);
+    const namespace = (params.namespace || this.env.DEFAULT_NAMESPACE || "global").trim();
+    const clientId = (params.clientId || "mcp-outcome").trim();
+    const citedIds = Array.from(
+      new Set(
+        (params.citedMemoryIds ?? [])
+          .map((id) => id.trim())
+          .map((id) => (id.startsWith("brain:") ? id.slice("brain:".length) : id))
+          .filter(Boolean)
+      )
+    );
+    const updatedMemoryIds: string[] = [];
+
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(
+        `INSERT INTO outcomes (
+           outcome_id, session_id, namespace, task_type, query, status,
+           result_summary, failed_attempts, cited_memory_ids_json,
+           verifier, evidence_uri, operator_feedback, client_id, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         ON CONFLICT(outcome_id) DO UPDATE SET
+           status = excluded.status,
+           result_summary = excluded.result_summary,
+           failed_attempts = excluded.failed_attempts,
+           cited_memory_ids_json = excluded.cited_memory_ids_json,
+           verifier = excluded.verifier,
+           evidence_uri = excluded.evidence_uri,
+           operator_feedback = excluded.operator_feedback`,
+        outcomeId,
+        params.sessionId,
+        namespace,
+        params.taskType,
+        params.query,
+        params.status,
+        params.resultSummary,
+        params.failedAttempts?.trim() || null,
+        JSON.stringify(citedIds),
+        params.verifier?.trim() || null,
+        params.evidenceUri?.trim() || null,
+        typeof params.operatorFeedback === "number" ? params.operatorFeedback : null,
+        clientId,
+        now
+      );
+
+      // Apply bounded confidence nudge ONLY when outcome is backed by an explicit verifier or operatorFeedback
+      const hasExternalVerification =
+        Boolean(params.verifier?.trim()) || typeof params.operatorFeedback === "number";
+
+      if (citedIds.length > 0 && hasExternalVerification) {
+        const isPositive =
+          params.status === "success" &&
+          (params.operatorFeedback === 1 ||
+            (params.operatorFeedback === undefined && Boolean(params.verifier?.trim())));
+        const isNegative = params.status === "failure" && params.operatorFeedback === -1;
+
+        if (isPositive || isNegative) {
+          const matchedRows = this.sql
+            .exec<{ id: string }>(
+              `SELECT id FROM memories
+               WHERE id IN (SELECT value FROM json_each(?1))
+                 AND superseded_by IS NULL`,
+              JSON.stringify(citedIds)
+            )
+            .toArray();
+
+          for (const row of matchedRows) {
+            if (isPositive) {
+              this.sql.exec(
+                `UPDATE memories
+                 SET validated_count = validated_count + 1,
+                     last_validated_at = ?1,
+                     confidence = MIN(1.0, confidence + 0.05)
+                 WHERE id = ?2`,
+                now,
+                row.id
+              );
+            } else {
+              this.sql.exec(
+                `UPDATE memories
+                 SET invalidated_count = invalidated_count + 1,
+                     last_validated_at = ?1,
+                     confidence = MAX(0.2, confidence - 0.10)
+                 WHERE id = ?2`,
+                now,
+                row.id
+              );
+            }
+            updatedMemoryIds.push(row.id);
+          }
+        }
+      }
+    });
+
+    let episodicLogId: number | undefined;
+    if (params.logEpisodic !== false) {
+      const episodicParts = [
+        `[Outcome ${outcomeId} | ${params.status.toUpperCase()} | ${params.taskType} | ns=${namespace}]`,
+        `Task: ${params.query}`,
+        `Result: ${params.resultSummary}`
+      ];
+      if (params.failedAttempts?.trim()) {
+        episodicParts.push(`Failed Attempts: ${params.failedAttempts.trim()}`);
+      }
+      if (citedIds.length > 0) {
+        episodicParts.push(`Cited Memories: ${citedIds.join(", ")}`);
+      }
+      if (params.verifier?.trim()) {
+        episodicParts.push(`Verifier: ${params.verifier.trim()}`);
+      }
+      const ev = await this.logEpisodicEvent({
+        sessionId: params.sessionId,
+        clientId,
+        eventType: params.status === "failure" ? "error_resolution" : "checkpoint",
+        payload: episodicParts.join("\n")
+      });
+      episodicLogId = ev.logId;
+    }
+
+    return {
+      ok: true,
+      outcomeId,
+      status: params.status,
+      updatedMemoryIds,
+      episodicLogId
+    };
+  }
+
+  /**
+   * RPC Method 3D: Query Recorded Outcomes & Aggregate Task Success Telemetry
+   */
+  async getOutcomes(params: GetOutcomesParams = {}): Promise<{
+    total: number;
+    byStatus: Record<string, number>;
+    successRate: number | null;
+    outcomes: OutcomeRow[];
+  }> {
+    const nsFilter = (params.namespace || "").trim();
+    const statusFilter = (params.status || "all").trim().toLowerCase();
+    const hours = Math.max(1, Math.min(8760, params.hours ?? 720));
+    const sinceUnix = Math.floor(Date.now() / 1000) - Math.floor(hours * 3600);
+    const limit = Math.max(1, Math.min(200, params.limit ?? 40));
+
+    const outcomes = this.sql
+      .exec<OutcomeRow>(
+        `SELECT
+           outcome_id, session_id, namespace, task_type, query, status,
+           result_summary, failed_attempts, cited_memory_ids_json,
+           verifier, evidence_uri, operator_feedback, client_id, created_at
+         FROM outcomes
+         WHERE created_at >= ?1
+           AND (?2 = '' OR namespace = ?2)
+           AND (?3 = 'all' OR status = ?3)
+         ORDER BY created_at DESC
+         LIMIT ?4`,
+        sinceUnix,
+        nsFilter,
+        statusFilter,
+        limit
+      )
+      .toArray();
+
+    const byStatus: Record<string, number> = {};
+    for (const o of outcomes) {
+      byStatus[o.status] = (byStatus[o.status] || 0) + 1;
+    }
+    const successRate =
+      outcomes.length > 0
+        ? Number(((byStatus["success"] || 0) / outcomes.length).toFixed(4))
+        : null;
+
+    return {
+      total: outcomes.length,
+      byStatus,
+      successRate,
+      outcomes
+    };
+  }
+
+  /**
+   * RPC Method 3E: Evidence-Backed Memory Validation (confirmed | weakened | invalid)
+   *                Updates epistemic confidence, validation counters, and freshness on confirmation,
+   *                records immutable provenance in memory_validations, and optionally soft-retires invalid facts.
+   */
+  async validateMemory(params: ValidateMemoryParams): Promise<{
+    ok: boolean;
+    validationId?: number;
+    memoryId: string;
+    verdict?: ValidationVerdict;
+    previousConfidence?: number;
+    newConfidence?: number;
+    validatedCount?: number;
+    invalidatedCount?: number;
+    retired?: boolean;
+    error?: string;
+  }> {
+    const rawId = (params.memoryId || "").trim();
+    const memoryId = rawId.startsWith("brain:") ? rawId.slice("brain:".length) : rawId;
+    const verdict = params.verdict;
+    const clientId = (params.clientId || "mcp-validate").trim();
+    const now = Math.floor(Date.now() / 1000);
+    const observedAt =
+      typeof params.observedAt === "number" && params.observedAt > 0
+        ? Math.floor(params.observedAt)
+        : now;
+
+    if (!memoryId || !["confirmed", "weakened", "invalid"].includes(verdict)) {
+      return {
+        ok: false,
+        memoryId,
+        error: "Valid memoryId and verdict ('confirmed' | 'weakened' | 'invalid') are required."
+      };
+    }
+
+    const existing = this.sql
+      .exec<{
+        id: string;
+        confidence: number;
+        validated_count: number;
+        invalidated_count: number;
+        updated_at: number;
+        superseded_by: string | null;
+      }>(
+        `SELECT id, confidence, validated_count, invalidated_count, updated_at, superseded_by
+         FROM memories
+         WHERE id = ?1`,
+        memoryId
+      )
+      .toArray()[0];
+
+    if (!existing) {
+      return { ok: false, memoryId, error: `Memory '${memoryId}' not found.` };
+    }
+    if (existing.superseded_by !== null) {
+      return {
+        ok: false,
+        memoryId,
+        error: `Memory '${memoryId}' is already retired/superseded by '${existing.superseded_by}'.`
+      };
+    }
+
+    const prevConf = Number(existing.confidence ?? 1.0);
+    let newConf = prevConf;
+    let newValidated = Number(existing.validated_count ?? 0);
+    let newInvalidated = Number(existing.invalidated_count ?? 0);
+
+    if (verdict === "confirmed") {
+      newConf = Number(Math.min(1.0, Math.max(prevConf + 0.15, 0.9)).toFixed(3));
+      newValidated += 1;
+    } else if (verdict === "weakened") {
+      newConf = Number(Math.max(0.25, prevConf - 0.3).toFixed(3));
+      newInvalidated += 1;
+    } else {
+      newConf = 0.05;
+      newInvalidated += 1;
+    }
+
+    let validationId = 0;
+    this.ctx.storage.transactionSync(() => {
+      if (verdict === "confirmed") {
+        // Refresh updated_at on explicit confirmation so verified durable facts reset decay
+        this.sql.exec(
+          `UPDATE memories
+           SET confidence = ?1,
+               validated_count = ?2,
+               last_validated_at = ?3,
+               updated_at = MAX(updated_at, ?3)
+           WHERE id = ?4`,
+          newConf,
+          newValidated,
+          observedAt,
+          memoryId
+        );
+      } else {
+        this.sql.exec(
+          `UPDATE memories
+           SET confidence = ?1,
+               invalidated_count = ?2,
+               last_validated_at = ?3
+           WHERE id = ?4`,
+          newConf,
+          newInvalidated,
+          observedAt,
+          memoryId
+        );
+      }
+
+      const vRow = this.sql
+        .exec<{ validation_id: number }>(
+          `INSERT INTO memory_validations (
+             memory_id, verdict, previous_confidence, new_confidence,
+             evidence_uri, notes, client_id, observed_at, created_at
+           ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+           RETURNING validation_id`,
+          memoryId,
+          verdict,
+          prevConf,
+          newConf,
+          params.evidenceUri?.trim() || null,
+          params.notes?.trim() || null,
+          clientId,
+          observedAt,
+          now
+        )
+        .one();
+      validationId = vRow.validation_id;
+    });
+
+    let retired = false;
+    if (verdict === "invalid" && params.autoRetireOnInvalid === true) {
+      const retireRes = await this.forgetMemory({
+        memoryId,
+        mode: "soft_retire",
+        reason: params.notes?.trim() || `Validated invalid (validation #${validationId})`,
+        clientId
+      });
+      retired = Boolean(retireRes.ok);
+    }
+
+    return {
+      ok: true,
+      validationId,
+      memoryId,
+      verdict,
+      previousConfidence: prevConf,
+      newConfidence: newConf,
+      validatedCount: newValidated,
+      invalidatedCount: newInvalidated,
+      retired
+    };
+  }
+
+  /**
    * RPC Method 4: Log an Episodic Session Event for Nocturnal Consolidation
    */
   async logEpisodicEvent(input: {
@@ -1431,9 +1865,12 @@ export class BrainMemoryDO extends DurableObject<Env> {
       episodicPending: number;
       conflictsPending: number;
       conflictsResolved: number;
+      outcomesRecorded: number;
+      outcomeSuccessRate: number | null;
       nextAlarmIso: string | null;
     };
     conflicts: MemoryConflictRow[];
+    outcomes: OutcomeRow[];
     mutations: MutationAuditRow[];
     decisions: Array<ActiveDecisionRow & { namespace: string; status: string }>;
     consolidations: ConsolidationRunRow[];
@@ -1601,6 +2038,28 @@ export class BrainMemoryDO extends DurableObject<Env> {
     const pendingConflicts = conflicts.filter((c) => c.status === "pending");
     const resolvedConflicts = conflicts.filter((c) => c.status === "resolved");
 
+    const outcomes = this.sql
+      .exec<OutcomeRow>(
+        `SELECT
+           outcome_id, session_id, namespace, task_type, query, status,
+           result_summary, failed_attempts, cited_memory_ids_json,
+           verifier, evidence_uri, operator_feedback, client_id, created_at
+         FROM outcomes
+         WHERE created_at >= ?1
+           AND (?2 = '' OR namespace = ?2)
+         ORDER BY created_at DESC
+         LIMIT 20`,
+        sinceUnix,
+        nsFilter
+      )
+      .toArray();
+    const outcomeSuccessRate =
+      outcomes.length > 0
+        ? Number(
+            (outcomes.filter((o) => o.status === "success").length / outcomes.length).toFixed(4)
+          )
+        : null;
+
     const episodicLoggedCount = this.sql
       .exec<{ count: number }>(
         `SELECT COUNT(*) AS count FROM episodic_logs WHERE created_at >= ?1`,
@@ -1633,6 +2092,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
         .map(([k, v]) => `\`${k}\` (${v})`)
         .join(", ") || "none"}`,
       `- **Governance Watchdog**: ${pendingConflicts.length} pending conflict(s) | ${resolvedConflicts.length} resolved in window`,
+      `- **Task Outcomes**: ${outcomes.length} recorded in window${outcomeSuccessRate !== null ? ` (${Math.round(outcomeSuccessRate * 100)}% success)` : ""}`,
       `- **Episodic Buffer**: ${episodicLoggedCount} logged in window | ${episodicPendingCount} pending consolidation | Next 03:00 AM alarm: \`${nextAlarmIso || "unscheduled"}\``
     ];
 
@@ -1686,6 +2146,18 @@ export class BrainMemoryDO extends DurableObject<Env> {
       }
     }
 
+    if (outcomes.length > 0) {
+      mdLines.push(`\n### Recent Verified Outcomes (${outcomes.length})`);
+      for (const o of outcomes.slice(0, 8)) {
+        const failNote = o.failed_attempts
+          ? ` | Failed attempts: ${o.failed_attempts.replace(/\s+/g, " ").slice(0, 140)}`
+          : "";
+        mdLines.push(
+          `- **[${o.status.toUpperCase()} | ${o.task_type}]** \`[${o.namespace}]\` ${o.result_summary.replace(/\s+/g, " ").slice(0, 180)}${failNote}`
+        );
+      }
+    }
+
     mdLines.push(`</overnight_brain_diff>`);
 
     return {
@@ -1702,9 +2174,12 @@ export class BrainMemoryDO extends DurableObject<Env> {
         episodicPending: episodicPendingCount,
         conflictsPending: pendingConflicts.length,
         conflictsResolved: resolvedConflicts.length,
+        outcomesRecorded: outcomes.length,
+        outcomeSuccessRate,
         nextAlarmIso
       },
       conflicts,
+      outcomes,
       mutations: rawMutations,
       decisions,
       consolidations,
@@ -3341,6 +3816,22 @@ export class BrainMemoryDO extends DurableObject<Env> {
       )
       .toArray();
 
+    const recentOutcomesList = this.sql
+      .exec<OutcomeRow>(
+        `SELECT
+           outcome_id, session_id, namespace, task_type, query, status,
+           result_summary, failed_attempts, cited_memory_ids_json,
+           verifier, evidence_uri, operator_feedback, client_id, created_at
+         FROM outcomes
+         ORDER BY created_at DESC
+         LIMIT 30`
+      )
+      .toArray();
+
+    const validationsCount = this.sql
+      .exec<{ count: number }>(`SELECT COUNT(*) AS count FROM memory_validations`)
+      .one().count;
+
     return {
       serverTimeIso: new Date().toISOString(),
       telemetry: {
@@ -3348,6 +3839,8 @@ export class BrainMemoryDO extends DurableObject<Env> {
         totalTokensStored: totalTokensRow.total_tokens,
         supersededMemories: totalTokensRow.superseded_count,
         totalRecalls: totalTokensRow.total_accesses,
+        outcomesCount: recentOutcomesList.length,
+        validationsCount,
         d1ArchiveCount,
         d1Status
       },
@@ -3425,7 +3918,8 @@ export class BrainMemoryDO extends DurableObject<Env> {
         consolidationRuns: consolidationRunsList,
         activeDecisions: activeDecisionsList,
         recentMutations: recentMutationsList,
-        conflicts: memoryConflictsList
+        conflicts: memoryConflictsList,
+        outcomes: recentOutcomesList
       }
     };
   }

@@ -492,4 +492,154 @@ describe("BrainMemoryDO SQLite, FTS5, Governance, Guardrails & Rollback invarian
     expect(md).toContain("**Revisit When**:");
     expect(md).toContain("More than 20 homelab nodes");
   });
+
+  it("records task outcomes, guards against unverified LLM self-attribution, and nudges confidence only on verified outcomes", async () => {
+    const { brain, state } = await createTestBrain();
+
+    await brain.rememberFact({
+      id: "mem-az-rbac",
+      namespace: "homelab",
+      title: "AZ-104 RBAC Role Assignment",
+      content: "Assign least-privilege roles at resource group scope.",
+      confidence: 0.75
+    });
+
+    // 1. Unverified outcome (no verifier, no operatorFeedback) MUST NOT mutate memory confidence
+    const unverified = await brain.recordOutcome({
+      sessionId: "sess-eval-1",
+      namespace: "homelab",
+      taskType: "research",
+      query: "AZ-104 RBAC study",
+      status: "success",
+      resultSummary: "Reviewed RBAC concepts.",
+      citedMemoryIds: ["brain:mem-az-rbac"]
+    });
+    expect(unverified.ok).toBe(true);
+    expect(unverified.updatedMemoryIds).toEqual([]);
+    expect(unverified.episodicLogId).toBeGreaterThan(0);
+
+    const afterUnverified = state.sql
+      .exec<{ confidence: number; validated_count: number }>(
+        `SELECT confidence, validated_count FROM memories WHERE id = 'mem-az-rbac'`
+      )
+      .one();
+    expect(afterUnverified.confidence).toBeCloseTo(0.75, 3);
+    expect(afterUnverified.validated_count).toBe(0);
+
+    // 2. Verified success outcome gently nudges confidence (+0.05) & increments validated_count
+    const verifiedSuccess = await brain.recordOutcome({
+      sessionId: "sess-eval-1",
+      namespace: "homelab",
+      taskType: "ops",
+      query: "Apply Azure RBAC lab",
+      status: "success",
+      resultSummary: "az role assignment create succeeded.",
+      failedAttempts: "Tried Subscription scope first; rejected by policy.",
+      citedMemoryIds: ["brain:mem-az-rbac"],
+      verifier: "az-cli",
+      operatorFeedback: 1
+    });
+    expect(verifiedSuccess.updatedMemoryIds).toEqual(["mem-az-rbac"]);
+
+    const afterSuccess = state.sql
+      .exec<{ confidence: number; validated_count: number }>(
+        `SELECT confidence, validated_count FROM memories WHERE id = 'mem-az-rbac'`
+      )
+      .one();
+    expect(afterSuccess.confidence).toBeCloseTo(0.8, 3);
+    expect(afterSuccess.validated_count).toBe(1);
+
+    // 3. Failure with operatorFeedback=-1 nudges confidence down (-0.10) & increments invalidated_count
+    await brain.recordOutcome({
+      sessionId: "sess-eval-2",
+      namespace: "homelab",
+      taskType: "bug_fix",
+      query: "Re-test stale RBAC CLI flag",
+      status: "failure",
+      resultSummary: "Deprecated flag rejected.",
+      failedAttempts: "Passed --assignee-object-id without --assignee-principal-type.",
+      citedMemoryIds: ["mem-az-rbac"],
+      operatorFeedback: -1
+    });
+
+    const afterFail = state.sql
+      .exec<{ confidence: number; invalidated_count: number }>(
+        `SELECT confidence, invalidated_count FROM memories WHERE id = 'mem-az-rbac'`
+      )
+      .one();
+    expect(afterFail.confidence).toBeCloseTo(0.7, 3);
+    expect(afterFail.invalidated_count).toBe(1);
+
+    // 4. Verify outcomes appear in getOutcomes() and getOvernightDiff()
+    const outList = await brain.getOutcomes({ namespace: "homelab" });
+    expect(outList.total).toBe(3);
+    expect(outList.successRate).toBeCloseTo(2 / 3, 2);
+
+    const diff = await brain.getOvernightDiff({ hours: 24, namespace: "homelab" });
+    expect(diff.summary.outcomesRecorded).toBe(3);
+    expect(diff.hydrationMarkdown).toContain("Recent Verified Outcomes");
+    expect(diff.hydrationMarkdown).toContain("Failed attempts:");
+  });
+
+  it("validates memories with evidence (confirmed / weakened / invalid + autoRetireOnInvalid) and respects RPi5 guardrails", async () => {
+    const { brain, state, vectorIndex } = await createTestBrain();
+
+    const oldTs = Math.floor(Date.now() / 1000) - 60 * 86400; // 60 days old
+    await brain.rememberFact({
+      id: "mem-wg-validate",
+      namespace: "homelab",
+      title: "WireGuard Port Config",
+      content: "WireGuard uses UDP 51820.",
+      confidence: 0.6,
+      createdAt: oldTs
+    });
+
+    // 1. Confirmed -> raises confidence to >= 0.90 and refreshes updated_at to reset decay
+    const conf = await brain.validateMemory({
+      memoryId: "brain:mem-wg-validate",
+      verdict: "confirmed",
+      evidenceUri: "ssh://pi/etc/wireguard/wg0.conf",
+      notes: "Verified active ListenPort = 51820 on RPi5"
+    });
+    expect(conf.ok).toBe(true);
+    expect(conf.newConfidence).toBeGreaterThanOrEqual(0.9);
+    expect(conf.validatedCount).toBe(1);
+
+    const rowAfterConf = state.sql
+      .exec<{ updated_at: number; last_validated_at: number }>(
+        `SELECT updated_at, last_validated_at FROM memories WHERE id = 'mem-wg-validate'`
+      )
+      .one();
+    expect(rowAfterConf.updated_at).toBeGreaterThan(oldTs);
+    expect(rowAfterConf.last_validated_at).toBeGreaterThan(oldTs);
+
+    // 2. Weakened -> lowers confidence by 0.30
+    const weak = await brain.validateMemory({
+      memoryId: "mem-wg-validate",
+      verdict: "weakened",
+      notes: "Port migration planned"
+    });
+    expect(weak.ok).toBe(true);
+    expect(weak.newConfidence).toBeCloseTo(0.6, 2);
+    expect(weak.invalidatedCount).toBe(1);
+
+    // 3. Invalid + autoRetireOnInvalid -> confidence=0.05 & soft-retires memory + deletes vector
+    const inv = await brain.validateMemory({
+      memoryId: "mem-wg-validate",
+      verdict: "invalid",
+      notes: "Replaced by Tailscale",
+      autoRetireOnInvalid: true
+    });
+    expect(inv.ok).toBe(true);
+    expect(inv.newConfidence).toBe(0.05);
+    expect(inv.retired).toBe(true);
+    expect(vectorIndex.vectors.has("mem-wg-validate")).toBe(false);
+
+    const logCount = state.sql
+      .exec<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM memory_validations WHERE memory_id = 'mem-wg-validate'`
+      )
+      .one().count;
+    expect(logCount).toBe(3);
+  });
 });

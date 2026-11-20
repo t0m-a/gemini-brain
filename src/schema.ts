@@ -186,6 +186,46 @@ CREATE TABLE IF NOT EXISTS memory_conflicts (
 
 CREATE INDEX IF NOT EXISTS idx_conflicts_status_created
     ON memory_conflicts(status, created_at DESC, namespace);
+
+-- 10. Task Outcomes & Behavioral Feedback Ledger (First-Class Attempted Plan + Observed Result)
+CREATE TABLE IF NOT EXISTS outcomes (
+    outcome_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    namespace TEXT NOT NULL DEFAULT 'global',
+    task_type TEXT NOT NULL,                  -- 'bug_fix' | 'architecture' | 'deployment' | 'audit' | 'research' | 'ops'
+    query TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('success', 'partial', 'failure', 'abandoned')),
+    result_summary TEXT NOT NULL,
+    failed_attempts TEXT,                     -- Explicit record of hypotheses or actions that did NOT work
+    cited_memory_ids_json TEXT NOT NULL DEFAULT '[]',
+    verifier TEXT,                            -- e.g., 'vitest', 'eval/run_eval.py', 'operator'
+    evidence_uri TEXT,
+    operator_feedback INTEGER,                -- Optional -1 | 0 | +1
+    client_id TEXT NOT NULL DEFAULT 'mcp-client',
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_outcomes_ns_status
+    ON outcomes(namespace, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_outcomes_session
+    ON outcomes(session_id, created_at DESC);
+
+-- 11. Evidence-Backed Memory Validation Log (Explicit Confirmation / Weakening / Invalidation)
+CREATE TABLE IF NOT EXISTS memory_validations (
+    validation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    verdict TEXT NOT NULL CHECK (verdict IN ('confirmed', 'weakened', 'invalid')),
+    previous_confidence REAL,
+    new_confidence REAL,
+    evidence_uri TEXT,
+    notes TEXT,
+    client_id TEXT NOT NULL DEFAULT 'mcp-validate',
+    observed_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_validations_memory
+    ON memory_validations(memory_id, created_at DESC);
 `;
 
 /**

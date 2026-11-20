@@ -15,7 +15,7 @@
 [![RPi5 Edge Sync](https://img.shields.io/badge/Raspberry_Pi_5-Debian_13_AST_%2B_Qdrant_Sync-A22846?style=for-the-badge&logo=raspberrypi&logoColor=white)](./rpi-sync/brain_watcher.py)
 [![TypeScript 5.8](https://img.shields.io/badge/TypeScript-5.8_Strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](./tsconfig.json)
 
-**A stateful, globally distributed cognitive layer hosted on the Cloudflare Edge (`v1.6.0`) that unifies Google Antigravity, Gemini CLI, the Gemini Web App (via native OAuth 2.0/2.1), a live Cognitive NOC Web Dashboard, Active Memory Governance & Semantic Contradiction Triage (`memory_conflicts`), and a Raspberry Pi 5 Home Lab into a single persistent memory brain.**
+**A stateful, globally distributed cognitive layer hosted on the Cloudflare Edge (`v1.7.0`) that unifies Google Antigravity, Gemini CLI, the Gemini Web App (via native OAuth 2.0/2.1), a live Cognitive NOC Web Dashboard, Active Memory Governance & Semantic Contradiction Triage (`memory_conflicts`), First-Class Outcomes & Evidence Validation (`outcomes` / `memory_validations`), and a Raspberry Pi 5 Home Lab into a single persistent memory brain.**
 
 [Layman's Architecture](#-part-i-architecture--how-it-works-in-laymans-terms) •
 [How to Use & Schedules](#-part-ii-how-to-use-it-laymans-guide-modules-roles--schedules) •
@@ -279,7 +279,7 @@ sequenceDiagram
 3. Click **Connect / Authorize**:
    - You will be redirected once through your **Cloudflare Zero Trust Login Portal** (`zero-trust-subdmain-XXXXcloudflareaccess.com`).
    - Upon completion, `brain.tsimon.me/token` issues a **30-day HMAC-SHA256 signed `access_token` (`bat.*`)** and **365-day `refresh_token` (`brt.*`)**.
-   - All 7 MCP tools (`forget_memory`, `get_overnight_diff`, `hybrid_recall`, `log_decision`, `log_episodic_event`, `remember_fact`, `resolve_conflict`) execute directly in chat over stateless JSON-mode Streamable HTTP (`enableJsonResponse: true`).
+   - All 9 MCP tools (`forget_memory`, `get_overnight_diff`, `hybrid_recall`, `log_decision`, `log_episodic_event`, `record_outcome`, `remember_fact`, `resolve_conflict`, `validate_memory`) execute directly in chat over stateless JSON-mode Streamable HTTP (`enableJsonResponse: true`).
 
 ---
 
@@ -499,7 +499,7 @@ flowchart TB
         AUTH["Dual-Mode Auth Gate<br/>(0ms PSK + HMAC-SHA256 bat.* + RS256 OIDC)"]
         NOC_MUX["WAF-Safe NOC Multiplexer<br/>(GET /mcp?ui=1 & POST /mcp?noc=<action>)"]
         CARD["SEP-2127 Discovery Card<br/>/server-card & /.well-known/mcp/server-card.json"]
-        MCP["McpServer v1.6.0 (package.json)<br/>(WebStandardStreamableHTTPServerTransport JSON-Mode)"]
+        MCP["McpServer v1.7.0 (package.json)<br/>(WebStandardStreamableHTTPServerTransport JSON-Mode)"]
         FED_SVC["KbFederationService<br/>(WorkerEntrypoint Cap'n Proto RPC)"]
     end
 
@@ -574,7 +574,7 @@ flowchart TB
   2. **HMAC-SHA256 Signed OAuth Token (`< 0.1 ms` overhead)**: Verifies `bat.*` tokens issued to the **Gemini Web App** using Web Crypto HMAC-SHA256.
   3. **Cloudflare OIDC JWT / Userinfo Fallback**: Verifies RS256 signatures against Cloudflare Access JWKS (`verifyCloudflareOidcJwt`) and `/userinfo` with 5-minute edge caching (`caches.default`).
   4. **RFC 9728 `401` Challenge**: Unauthenticated requests to `/mcp` receive `HTTP 401` with `WWW-Authenticate: Bearer error="invalid_token", resource_metadata="https://brain.tsimon.me/.well-known/oauth-protected-resource", as_uri="https://brain.tsimon.me/.well-known/oauth-authorization-server"`.
-- **Alphabetical Tool Registration (`ADR-02` Compliance):** Registers all **7 MCP Tools** in strict alphabetical order (`forget_memory`, `get_overnight_diff`, `hybrid_recall` with optional `explain: true`, `log_decision` with optional `rejectedOptions`/`revisitWhen`, `log_episodic_event`, `remember_fact` with optional `confidence`, `resolve_conflict`), **3 MCP Resources** (`brain://decisions/active`, `brain://telemetry/status`, `brain://audit/overnight`), and **2 MCP Prompts** (`checkpoint-session`, `hydrate-morning-session`).
+- **Alphabetical Tool Registration (`ADR-02` Compliance):** Registers all **9 MCP Tools** in strict alphabetical order (`forget_memory`, `get_overnight_diff`, `hybrid_recall` with optional `explain: true`, `log_decision` with optional `rejectedOptions`/`revisitWhen`, `log_episodic_event`, `record_outcome`, `remember_fact` with optional `confidence`, `resolve_conflict`, `validate_memory`), **3 MCP Resources** (`brain://decisions/active`, `brain://telemetry/status`, `brain://audit/overnight`), and **2 MCP Prompts** (`checkpoint-session`, `hydrate-morning-session`).
 
 ---
 
