@@ -589,4 +589,153 @@ describe("Worker HTTP auth & OAuth 2.1 boundary enforcement (src/index.ts)", () 
     await Promise.allSettled(pendingWaits);
     expect(loggedEvents).toHaveLength(1);
   });
+
+  it("propagates X-Brain-Client-Id header as default clientId for MCP writes without filtering get_overnight_diff", async () => {
+    const rememberedCalls: Array<{ clientId?: string; title?: string }> = [];
+    const episodicCalls: Array<{ clientId?: string; sessionId?: string }> = [];
+    const diffCalls: Array<{ clientId?: string; hours?: number }> = [];
+
+    const { env } = createMockEnv();
+    env.BRAIN_DO = {
+      idFromName: () => "singleton-brain-id",
+      get: () => ({
+        rememberFact: async (input: { clientId?: string; title?: string }) => {
+          rememberedCalls.push(input);
+          return { id: "mem-1", mutationId: 1 };
+        },
+        logEpisodicEvent: async (input: { clientId?: string; sessionId?: string }) => {
+          episodicCalls.push(input);
+          return { logId: 1 };
+        },
+        getOvernightDiff: async (input: { clientId?: string; hours?: number }) => {
+          diffCalls.push(input);
+          return { hydrationMarkdown: "# Overnight Diff\nAll clients." };
+        }
+      })
+    } as unknown as typeof env.BRAIN_DO;
+
+    const callMcp = (body: Record<string, unknown>, extraHeaders: Record<string, string> = {}) =>
+      worker.fetch(
+        new Request(`${BRAIN_ORIGIN}/mcp`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+            Authorization: `Bearer ${TEST_SECRET}`,
+            ...extraHeaders
+          },
+          body: JSON.stringify(body)
+        }),
+        env,
+        createExecCtx()
+      );
+
+    // 1. Omitted clientId on remember_fact falls back to X-Brain-Client-Id header
+    const r1 = await callMcp(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "remember_fact",
+          arguments: { title: "RPi5 CLI test", content: "Attributed via header." }
+        }
+      },
+      { "X-Brain-Client-Id": "antigravity-cli-rpi5" }
+    );
+    expect(r1.status).toBe(200);
+    expect(rememberedCalls[0]?.clientId).toBe("antigravity-cli-rpi5");
+
+    // 2. Explicit clientId in arguments overrides X-Brain-Client-Id header
+    const r2 = await callMcp(
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "remember_fact",
+          arguments: {
+            title: "Explicit override",
+            content: "Explicit clientId wins.",
+            clientId: "antigravity-win11"
+          }
+        }
+      },
+      { "X-Brain-Client-Id": "antigravity-cli-rpi5" }
+    );
+    expect(r2.status).toBe(200);
+    expect(rememberedCalls[1]?.clientId).toBe("antigravity-win11");
+
+    // 3. log_episodic_event without clientId falls back to X-Brain-Client-Id header
+    const r3 = await callMcp(
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "log_episodic_event",
+          arguments: {
+            sessionId: "rpi5-session-1",
+            eventType: "checkpoint",
+            payload: "RPi5 CLI session completed."
+          }
+        }
+      },
+      { "X-Brain-Client-Id": "antigravity-cli-rpi5" }
+    );
+    expect(r3.status).toBe(200);
+    expect(episodicCalls[0]?.clientId).toBe("antigravity-cli-rpi5");
+
+    // 4. get_overnight_diff does NOT restrict filter to X-Brain-Client-Id
+    const r4 = await callMcp(
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: { name: "get_overnight_diff", arguments: { hours: 12 } }
+      },
+      { "X-Brain-Client-Id": "antigravity-cli-rpi5" }
+    );
+    expect(r4.status).toBe(200);
+    expect(diffCalls[0]?.clientId).toBeUndefined();
+  });
+
+  it("advertises antigravity-cli-rpi5 on /server-card and Cognitive NOC dashboard", async () => {
+    const { env } = createMockEnv();
+    const cardRes = await worker.fetch(
+      new Request(`${BRAIN_ORIGIN}/server-card`),
+      env,
+      createExecCtx()
+    );
+    expect(cardRes.status).toBe(200);
+    const card = (await cardRes.json()) as {
+      client_sources?: Array<{ clientId: string; surface: string; transport: string }>;
+    };
+    expect(card.client_sources?.some((s) => s.clientId === "antigravity-cli-rpi5")).toBe(true);
+
+    const uiRes = await worker.fetch(
+      new Request(`${BRAIN_ORIGIN}/mcp?ui=1`, { headers: { Accept: "text/html" } }),
+      env,
+      createExecCtx()
+    );
+    expect(uiRes.status).toBe(200);
+    const html = await uiRes.text();
+    expect(html).toContain("antigravity-cli-rpi5");
+    expect(html).toContain("6 Surfaces");
+
+    const surfaceOrder = [
+      "Google Antigravity IDE / 2.0",
+      "Raspberry Pi 5 Home Lab (node:rpi5)",
+      "Raspberry Pi 5 Gemini CLI",
+      "Gemini Web App Bridge",
+      "Nocturnal Dreamer (Llama 3.3 70B)",
+      "Gemini CLI Terminal (Win11)"
+    ];
+    const surfaceCardsSection = html.slice(html.indexOf("const surfaceCards = ["));
+    const positions = surfaceOrder.map((label) => surfaceCardsSection.indexOf(label));
+    positions.forEach((pos) => expect(pos).toBeGreaterThan(-1));
+    for (let i = 1; i < positions.length; i++) {
+      expect(positions[i]).toBeGreaterThan(positions[i - 1]);
+    }
+  });
 });

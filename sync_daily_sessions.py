@@ -20,6 +20,7 @@ import argparse
 import datetime as dt
 import json
 import pathlib
+import platform
 import re
 import sys
 import urllib.request
@@ -305,17 +306,29 @@ def fetch_existing_remote_sessions(token: str, hours: int = 168) -> Set[str]:
     return {str(row.get("session_id")) for row in logs if row.get("session_id")}
 
 
-def discover_transcripts(hours: float) -> List[Dict[str, Any]]:
+def default_host_tag() -> str:
+    sys_name = platform.system().lower()
+    if sys_name == "windows":
+        return "win11"
+    machine = platform.machine().lower()
+    node = platform.node().lower()
+    if "rpi" in node or "raspberry" in node or machine in ("aarch64", "arm64"):
+        return "rpi5"
+    return re.sub(r"[^a-z0-9-]+", "-", node).strip("-") or sys_name
+
+
+def discover_transcripts(hours: float, host_tag: Optional[str] = None) -> List[Dict[str, Any]]:
     home = pathlib.Path.home()
     gemini_dir = home / ".gemini"
     cutoff_ts = dt.datetime.now(tz=dt.timezone.utc).timestamp() - (hours * 3600.0)
     discovered: List[Dict[str, Any]] = []
+    tag = (host_tag or default_host_tag()).strip()
 
     # 1. Antigravity surfaces (antigravity, antigravity-cli, antigravity-ide)
     agy_surfaces = [
-        ("antigravity", "antigravity-win11"),
-        ("antigravity-cli", "antigravity-cli-win11"),
-        ("antigravity-ide", "antigravity-ide-win11"),
+        ("antigravity", f"antigravity-{tag}"),
+        ("antigravity-cli", f"antigravity-cli-{tag}"),
+        ("antigravity-ide", f"antigravity-ide-{tag}"),
     ]
     for folder_name, client_id in agy_surfaces:
         brain_root = gemini_dir / folder_name / "brain"
@@ -383,7 +396,7 @@ def discover_transcripts(hours: float) -> List[Dict[str, Any]]:
                 discovered.append(
                     {
                         "session_id": session_id,
-                        "client_id": "gemini-cli-win11",
+                        "client_id": "antigravity-cli-rpi5" if tag == "rpi5" else f"gemini-cli-{tag}",
                         "source_label": f"gemini-cli/{pdir.name}",
                         "path": str(cfile),
                         "mtime": mtime,
@@ -413,6 +426,12 @@ def main() -> int:
         help="Inspect and preview unlogged sessions without uploading to BrainMemoryDO.",
     )
     parser.add_argument(
+        "--host-tag",
+        type=str,
+        default="",
+        help="Host suffix for clientId attribution (auto-detected: 'win11' on Windows, 'rpi5' on RPi5).",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Output machine-readable JSON summary.",
@@ -421,7 +440,7 @@ def main() -> int:
 
     token = bm.load_bearer_token()
     existing_sessions = fetch_existing_remote_sessions(token, hours=max(168, int(args.hours) + 24))
-    candidates = discover_transcripts(hours=args.hours)
+    candidates = discover_transcripts(hours=args.hours, host_tag=args.host_tag or None)
 
     uploaded: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []

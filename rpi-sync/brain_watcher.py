@@ -64,6 +64,20 @@ QDRANT_SYNC_INTERVAL_SEC: float = float(
     os.environ.get("QDRANT_SYNC_INTERVAL_SEC", "300.0")
 )
 
+# RPi5 Antigravity / Gemini CLI Session Harvester Configuration
+CLI_SYNC_ENABLED: bool = os.environ.get("CLI_SYNC_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+CLI_CLIENT_ID: str = os.environ.get("CLI_CLIENT_ID", "antigravity-cli-rpi5").strip() or "antigravity-cli-rpi5"
+CLI_GEMINI_DIR: Path = Path(
+    os.environ.get("CLI_GEMINI_DIR", str(Path.home() / ".gemini"))
+).expanduser()
+CLI_SYNC_INTERVAL_SEC: float = float(os.environ.get("CLI_SYNC_INTERVAL_SEC", "900.0"))
+CLI_LOOKBACK_HOURS: float = float(os.environ.get("CLI_LOOKBACK_HOURS", "48.0"))
+CLI_SESSION_IDLE_SEC: float = float(os.environ.get("CLI_SESSION_IDLE_SEC", "180.0"))
+
 IGNORED_DIRS: set[str] = {
     ".git",
     "node_modules",
@@ -251,24 +265,46 @@ def chunk_markdown_file(file_path: Path, rel_path: str, namespace: str) -> list[
         return []
 
     matches = list(MD_HEADER_RE.finditer(text))
-    sections: list[tuple[str, str]] = []
+    # Each section stores: (full_breadcrumb, display_heading, leaf_heading, anchor_base, section_body)
+    sections: list[tuple[str, str, str, str, str]] = []
 
     if not matches:
-        sections.append((file_path.stem, text.strip()))
+        stem_slug = slugify(file_path.stem)
+        sections.append((file_path.stem, file_path.stem, file_path.stem, stem_slug, text.strip()))
     else:
+        heading_stack: list[tuple[int, str]] = []
         for idx, match in enumerate(matches):
+            level = len(match.group(1))
             heading_title = match.group(2).strip()
+
+            # Always update the heading hierarchy stack even if this section's body
+            # is short (< 40 chars) so nested subheadings inherit their true parent.
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
+            heading_stack.append((level, heading_title))
+
             start = match.start()
             end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
             section_body = text[start:end].strip()
             if len(section_body) >= 40:
-                sections.append((heading_title, section_body))
+                breadcrumb = " > ".join(h for _, h in heading_stack)
+                display_heading = " › ".join(h for _, h in heading_stack[-2:])
+                anchor_base = "--".join(
+                    slugify(h)[:60].rstrip("-") for _, h in heading_stack[-2:]
+                )
+                sections.append((breadcrumb, display_heading, heading_title, anchor_base, section_body))
 
     chunks: list[SemanticChunk] = []
     doc_entity_id = f"doc:{slugify(file_path.stem)}"
+    seen_breadcrumbs: dict[str, int] = {}
 
-    for heading, body in sections:
-        chunk_id = make_chunk_id("md", f"{namespace}:{rel_path}:{heading}")
+    for breadcrumb, display_heading, leaf_heading, anchor_base, body in sections:
+        occurrence = seen_breadcrumbs.get(breadcrumb, 0) + 1
+        seen_breadcrumbs[breadcrumb] = occurrence
+        unique_breadcrumb = breadcrumb if occurrence == 1 else f"{breadcrumb} #{occurrence}"
+
+        chunk_id = make_chunk_id("md", f"{namespace}:{rel_path}:{unique_breadcrumb}")
+        anchor = anchor_base if occurrence == 1 else f"{anchor_base}-{occurrence}"
         wikilinks = sorted(set(WIKILINK_RE.findall(body)))
         triples = [
             {
@@ -288,17 +324,17 @@ def chunk_markdown_file(file_path: Path, rel_path: str, namespace: str) -> list[
             for line in body.splitlines()
             if line.strip() and not line.strip().startswith("#")
         ]
-        summary = (plain_lines[0] if plain_lines else heading)[:240]
+        summary = (plain_lines[0] if plain_lines else leaf_heading)[:240]
 
         chunks.append(
             SemanticChunk(
                 chunk_id=chunk_id,
                 namespace=namespace,
                 memory_type="semantic",
-                title=f"{file_path.stem} — {heading}",
+                title=f"{file_path.stem} — {display_heading}",
                 content=body,
                 summary=summary,
-                source_uri=f"rpi5://{rel_path}#{slugify(heading)}",
+                source_uri=f"rpi5://{rel_path}#{anchor}",
                 importance=0.80,
                 triples=triples,
             )
@@ -624,6 +660,275 @@ class BrainSyncHandler(FileSystemEventHandler):
                 self.sync_file(target)
 
 
+# =============================================================================
+# RPI5 ANTIGRAVITY / GEMINI CLI TRANSCRIPT HARVESTER
+# =============================================================================
+class RpiCliSessionHarvester:
+    """Harvests idle Antigravity CLI & Gemini CLI session transcripts on RPi5 into BrainMemoryDO episodic_logs."""
+
+    def __init__(
+        self,
+        gemini_dir: Path,
+        client_id: str,
+        lookback_hours: float,
+        idle_seconds: float,
+        state_db: LocalSyncStateDB,
+        mcp: BrainMcpClient,
+    ) -> None:
+        self.gemini_dir = gemini_dir
+        self.client_id = client_id
+        self.lookback_hours = lookback_hours
+        self.idle_seconds = idle_seconds
+        self.state_db = state_db
+        self.mcp = mcp
+
+    @staticmethod
+    def _clean_user_text(raw: str) -> str:
+        text = raw or ""
+        m = re.search(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", text, flags=re.DOTALL)
+        if m:
+            text = m.group(1)
+        else:
+            text = re.sub(r"<CONTEXT_SUMMARY>.*?</CONTEXT_SUMMARY>", "", text, flags=re.DOTALL)
+            text = re.sub(r"<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>", "", text, flags=re.DOTALL)
+            text = re.sub(r"<session_context>.*?</session_context>", "", text, flags=re.DOTALL)
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _extract_gcli_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+            return "\n".join(parts)
+        if isinstance(content, dict) and isinstance(content.get("text"), str):
+            return content["text"]
+        return ""
+
+    def _parse_antigravity_transcript(self, path: Path) -> tuple[list[str], list[str], str]:
+        user_prompts: list[str] = []
+        assistant_responses: list[str] = []
+        last_created_at = ""
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return [], [], time.strftime("%Y-%m-%d", time.gmtime())
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            created_at = obj.get("created_at")
+            if isinstance(created_at, str) and len(created_at) >= 10:
+                last_created_at = created_at[:10]
+            step_type = obj.get("type", "")
+            content = obj.get("content", "")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            if step_type == "USER_INPUT":
+                cleaned = self._clean_user_text(content)
+                if cleaned and (not user_prompts or user_prompts[-1] != cleaned):
+                    user_prompts.append(cleaned)
+            elif step_type == "PLANNER_RESPONSE":
+                cleaned = re.sub(r"\s+", " ", content).strip()
+                if cleaned and len(cleaned) > 25:
+                    assistant_responses.append(cleaned)
+
+        iso_date = last_created_at or time.strftime("%Y-%m-%d", time.gmtime(path.stat().st_mtime))
+        return user_prompts, assistant_responses, iso_date
+
+    def _parse_gemini_cli_transcript(self, path: Path) -> tuple[str, list[str], list[str], str]:
+        project_slug = path.parent.parent.name
+        session_id = f"gcli-rpi5-{project_slug}-{path.stem}"
+        user_prompts: list[str] = []
+        assistant_responses: list[str] = []
+        last_updated = ""
+        try:
+            raw_text = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return session_id, [], [], time.strftime("%Y-%m-%d", time.gmtime())
+        if not raw_text:
+            return session_id, [], [], time.strftime("%Y-%m-%d", time.gmtime())
+
+        messages: list[dict[str, Any]] = []
+        if path.suffix == ".json":
+            try:
+                data = json.loads(raw_text)
+                if isinstance(data, dict):
+                    messages = data.get("messages", [])
+                    last_updated = str(data.get("lastUpdated") or data.get("startTime") or "")
+            except json.JSONDecodeError:
+                pass
+        else:
+            for line in raw_text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if "lastUpdated" in obj:
+                    last_updated = str(obj.get("lastUpdated") or "")
+                if "$set" in obj and isinstance(obj["$set"], dict):
+                    if isinstance(obj["$set"].get("messages"), list):
+                        messages = obj["$set"]["messages"]
+                    if "lastUpdated" in obj["$set"]:
+                        last_updated = str(obj["$set"].get("lastUpdated") or "")
+                elif isinstance(obj.get("messages"), list):
+                    messages = obj["messages"]
+
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            mtype = str(msg.get("type") or msg.get("role") or "").lower()
+            raw_content = self._extract_gcli_text(msg.get("content"))
+            if not raw_content:
+                continue
+            if mtype in ("user", "human"):
+                cleaned = self._clean_user_text(raw_content)
+                if cleaned and (not user_prompts or user_prompts[-1] != cleaned):
+                    user_prompts.append(cleaned)
+            elif mtype in ("gemini", "model", "assistant"):
+                cleaned = re.sub(r"\s+", " ", raw_content).strip()
+                if cleaned and len(cleaned) > 25:
+                    assistant_responses.append(cleaned)
+
+        iso_date = (
+            last_updated[:10]
+            if len(last_updated) >= 10
+            else time.strftime("%Y-%m-%d", time.gmtime(path.stat().st_mtime))
+        )
+        return session_id, user_prompts, assistant_responses, iso_date
+
+    def _build_payload(
+        self,
+        session_id: str,
+        iso_date: str,
+        source_label: str,
+        user_prompts: list[str],
+        assistant_responses: list[str],
+    ) -> str:
+        header = (
+            f"RPi5 CLI Session Checkpoint ({iso_date} | client: {self.client_id} | "
+            f"source: {source_label} | session: {session_id}):"
+        )
+        req_lines = [f"User Requests ({len(user_prompts)} turns):"]
+        for idx, prompt in enumerate(user_prompts[:12], start=1):
+            snippet = prompt[:240] + ("..." if len(prompt) > 240 else "")
+            req_lines.append(f"  {idx}. {snippet}")
+
+        selected = (
+            assistant_responses
+            if len(assistant_responses) <= 4
+            else [assistant_responses[0]] + assistant_responses[-3:]
+        )
+        outcome_lines = ["Key Assistant Outcomes & Findings:"]
+        if not selected:
+            outcome_lines.append("  - Session contained user prompts without recorded text responses.")
+        else:
+            for resp in selected:
+                snippet = resp[:500] + ("..." if len(resp) > 500 else "")
+                outcome_lines.append(f"  - {snippet}")
+
+        return "\n".join([header, "\n".join(req_lines), "\n".join(outcome_lines)])[:4000]
+
+    def sync_sessions(self) -> int:
+        if not self.gemini_dir.exists():
+            logger.debug("CLI_GEMINI_DIR %s not found; skipping RPi5 CLI harvest.", self.gemini_dir)
+            return 0
+
+        now = time.time()
+        cutoff_ts = now - (self.lookback_hours * 3600.0)
+        candidates: list[tuple[str, str, list[str], list[str], str]] = []
+
+        # 1. Antigravity CLI transcripts (~/.gemini/antigravity-cli/brain/<uuid>/.system_generated/logs/transcript.jsonl)
+        agy_brain_root = self.gemini_dir / "antigravity-cli" / "brain"
+        if agy_brain_root.is_dir():
+            for sdir in sorted(agy_brain_root.iterdir()):
+                if not sdir.is_dir() or sdir.name == "tempmediaStorage":
+                    continue
+                tpath = sdir / ".system_generated" / "logs" / "transcript.jsonl"
+                if not tpath.is_file():
+                    continue
+                try:
+                    mtime = tpath.stat().st_mtime
+                except OSError:
+                    continue
+                if mtime < cutoff_ts or (now - mtime) < self.idle_seconds:
+                    continue
+                prompts, responses, iso_date = self._parse_antigravity_transcript(tpath)
+                if prompts:
+                    candidates.append((sdir.name, "antigravity-cli", prompts, responses, iso_date))
+
+        # 2. Gemini CLI transcripts (~/.gemini/tmp/<project>/chats/session-*.jsonl & *.json)
+        tmp_root = self.gemini_dir / "tmp"
+        if tmp_root.is_dir():
+            for pdir in sorted(tmp_root.iterdir()):
+                chats_dir = pdir / "chats"
+                if not chats_dir.is_dir():
+                    continue
+                for cfile in sorted(chats_dir.glob("session-*.*")):
+                    if cfile.suffix not in (".jsonl", ".json"):
+                        continue
+                    try:
+                        mtime = cfile.stat().st_mtime
+                    except OSError:
+                        continue
+                    if mtime < cutoff_ts or (now - mtime) < self.idle_seconds:
+                        continue
+                    sid, prompts, responses, iso_date = self._parse_gemini_cli_transcript(cfile)
+                    if prompts:
+                        candidates.append((sid, f"gemini-cli/{pdir.name}", prompts, responses, iso_date))
+
+        synced_count = 0
+        for session_id, source_label, prompts, responses, iso_date in candidates:
+            payload = self._build_payload(session_id, iso_date, source_label, prompts, responses)
+            sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            state_key = f"cli_session:{session_id}"
+            if self.state_db.is_unchanged(state_key, sha):
+                continue
+
+            self.mcp.call_tool(
+                "log_episodic_event",
+                {
+                    "sessionId": session_id,
+                    "clientId": self.client_id,
+                    "eventType": "checkpoint",
+                    "payload": payload,
+                },
+            )
+            self.state_db.mark_synced(state_key, f"rpi5-cli://{source_label}/{session_id}", sha)
+            synced_count += 1
+            logger.info(
+                "Harvested RPi5 CLI session [%s] %s (%d turns)",
+                self.client_id,
+                session_id,
+                len(prompts),
+            )
+
+        if synced_count > 0:
+            logger.info(
+                "RPi5 CLI session harvest complete (%s): synced=%d",
+                self.client_id,
+                synced_count,
+            )
+        return synced_count
+
+
 def main() -> None:
     if not RPI_SYNC_ENABLED:
         logger.info(
@@ -639,6 +944,14 @@ def main() -> None:
         api_key=qdrant_key,
         collection=qdrant_collection,
         namespace=DEFAULT_NAMESPACE,
+        state_db=state_db,
+        mcp=mcp,
+    )
+    cli_harvester = RpiCliSessionHarvester(
+        gemini_dir=CLI_GEMINI_DIR,
+        client_id=CLI_CLIENT_ID,
+        lookback_hours=CLI_LOOKBACK_HOURS,
+        idle_seconds=CLI_SESSION_IDLE_SEC,
         state_db=state_db,
         mcp=mcp,
     )
@@ -667,6 +980,10 @@ def main() -> None:
     total_qdrant_chunks = federator.sync_collection()
     last_qdrant_sync = time.monotonic()
 
+    # Harvest idle RPi5 Antigravity / Gemini CLI sessions into BrainMemoryDO episodic_logs
+    total_cli_sessions = cli_harvester.sync_sessions() if CLI_SYNC_ENABLED else 0
+    last_cli_sync = time.monotonic()
+
     if (total_initial_chunks + total_qdrant_chunks) > 0:
         mcp.call_tool(
             "log_episodic_event",
@@ -675,20 +992,28 @@ def main() -> None:
                 "clientId": CLIENT_ID,
                 "eventType": "checkpoint",
                 "payload": (
-                    f"Raspberry Pi 5 daemon synced {total_initial_chunks} filesystem chunks "
-                    f"and federated {total_qdrant_chunks} Qdrant ({qdrant_collection}) points."
+                    f"Raspberry Pi 5 daemon synced {total_initial_chunks} filesystem chunks, "
+                    f"federated {total_qdrant_chunks} Qdrant ({qdrant_collection}) points, "
+                    f"and harvested {total_cli_sessions} CLI sessions ({CLI_CLIENT_ID})."
                 ),
             },
         )
 
     observer.start()
-    logger.info("Raspberry Pi 5 Brain Watcher + Qdrant Federator is active. Press Ctrl+C to stop.")
+    logger.info(
+        "Raspberry Pi 5 Brain Watcher + Qdrant Federator + CLI Harvester (%s) is active. Press Ctrl+C to stop.",
+        CLI_CLIENT_ID,
+    )
     try:
         while True:
             time.sleep(5)
-            if time.monotonic() - last_qdrant_sync >= QDRANT_SYNC_INTERVAL_SEC:
+            now_mono = time.monotonic()
+            if now_mono - last_qdrant_sync >= QDRANT_SYNC_INTERVAL_SEC:
                 federator.sync_collection()
-                last_qdrant_sync = time.monotonic()
+                last_qdrant_sync = now_mono
+            if CLI_SYNC_ENABLED and now_mono - last_cli_sync >= CLI_SYNC_INTERVAL_SEC:
+                cli_harvester.sync_sessions()
+                last_cli_sync = now_mono
     except KeyboardInterrupt:
         observer.stop()
     observer.join()

@@ -15,7 +15,7 @@
 [![RPi5 Edge Sync](https://img.shields.io/badge/Raspberry_Pi_5-Debian_13_AST_%2B_Qdrant_Sync-A22846?style=for-the-badge&logo=raspberrypi&logoColor=white)](./rpi-sync/brain_watcher.py)
 [![TypeScript 5.8](https://img.shields.io/badge/TypeScript-5.8_Strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](./tsconfig.json)
 
-**A stateful, globally distributed cognitive layer hosted on the Cloudflare Edge (`v1.7.0`) that unifies Google Antigravity, Gemini CLI, the Gemini Web App (via native OAuth 2.0/2.1), a live Cognitive NOC Web Dashboard, Active Memory Governance & Semantic Contradiction Triage (`memory_conflicts`), First-Class Outcomes & Evidence Validation (`outcomes` / `memory_validations`), and a Raspberry Pi 5 Home Lab into a single persistent memory brain.**
+**A stateful, globally distributed cognitive layer hosted on the Cloudflare Edge (`v1.7.3`) that unifies Google Antigravity, Windows 11 & Raspberry Pi 5 Gemini CLI (`X-Brain-Client-Id` attribution), the Gemini Web App (via native OAuth 2.0/2.1), a live Cognitive NOC Web Dashboard (6 Connected Client Surfaces), Active Memory Governance & Semantic Contradiction Triage (`memory_conflicts`), First-Class Outcomes & Evidence Validation (`outcomes` / `memory_validations`), and a Raspberry Pi 5 Home Lab into a single persistent memory brain.**
 
 [Layman's Architecture](#-part-i-architecture--how-it-works-in-laymans-terms) •
 [How to Use & Schedules](#-part-ii-how-to-use-it-laymans-guide-modules-roles--schedules) •
@@ -322,6 +322,13 @@ Gemini Brain includes a built-in **Cognitive NOC Web Dashboard** ([src/dashboard
 
 ### 🌐 Cloud Access (`https://brain.tsimon.me/mcp?ui=1`)
 - **Primary Cloud URL**: `https://brain.tsimon.me/mcp?ui=1` *(also accessible at `/dashboard` and `/ui`; append `?reset=1` to clear stored browser session state—the dashboard automatically cleans `&reset=1` from the URL bar after locking so subsequent refreshes stay unlocked)*.
+- **Tab 1 (`1. NOC Topology, Surfaces & Knowledge Graph`) — Connected Client Surfaces Order**:
+  1. **💻 Google Antigravity IDE / 2.0** (`antigravity-win11`)
+  2. **🍓 Raspberry Pi 5 Home Lab (node:rpi5)** (`rpi5-debian13-daemon / qdrant`)
+  3. **🍓⌨️ Raspberry Pi 5 Gemini CLI** (`antigravity-cli-rpi5`)
+  4. **🌐 Gemini Web App Bridge** (`gemini-web-architect`)
+  5. **🌙 Nocturnal Dreamer (Llama 3.3 70B)** (`nocturnal-consolidator`)
+  6. **⌨️ Gemini CLI Terminal (Win11)** (`gemini-cli-win11`)
 - **Zero-Secret HTML Shell & WAF-Safe Multiplexing (`ADR-05`)**:
   - No secrets are ever embedded in the HTML source. On first visit, paste your `MCP_BEARER_TOKEN` into the authentication prompt (the browser automatically strips `MCP_BEARER_TOKEN=`, `Bearer `, quotes, and whitespace).
   - All interactive actions (`dashboard`, `recall`, `consolidate`, `reindex`, `rollback`, `conflicts`, `audit_conflicts`, `resolve_conflict`) multiplex over **`POST /mcp?noc=<action>`** (`X-Brain-Noc-Action`) and return HTTP `200 OK` with structured `{ ok: false, authError }` on invalid credentials so Cloudflare WAF / Super Bot Fight Mode never triggers `403` rate-limit lockouts.
@@ -395,13 +402,13 @@ Below is the complete, unomitted inventory of **every module in the system**, **
 
 | Module / File | Plain-English Role | Every Function Inside & What It Does | Exact Schedule / When It Runs |
 | :--- | :--- | :--- | :--- |
-| **[src/index.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/index.ts)**<br/>*The Front Door, OAuth 2.1 Proxy & NOC Router* | Welcomes incoming connections at `brain.tsimon.me`, runs the Dual-Mode Security Gate (`MCP_BEARER_TOKEN` Fast-Path + Signed OAuth 2.0/OIDC), serves the Cognitive NOC UI (`/mcp?ui=1`), and routes JSON-mode MCP requests to your Brain vault. | • `fetch()`: Handles static browser probes (`/favicon.ico`), serves public OAuth 2.0/2.1 discovery (`/.well-known/oauth-*`) and proxy routes (`/authorize`, `/callback`, `/token`, `/userinfo`, `/register`), multiplexes NOC dashboard AJAX calls (`POST /mcp?noc=<action>`), enforces the Dual-Mode Auth Gate, and runs `WebStandardStreamableHTTPServerTransport` (`enableJsonResponse: true`).<br/>• `createBrainMcpServer()`: Registers the **6 Tools** (`get_overnight_diff`, `hybrid_recall`, `log_decision`, `log_episodic_event`, `remember_fact`, `resolve_conflict`), **3 Resources** (`brain://decisions/active`, `brain://telemetry/status`, `brain://audit/overnight`), and **2 Prompts** (`checkpoint-session`, `hydrate-morning-session`).<br/>• `createSignedToken()` & `verifySignedToken()`: Mints and verifies HMAC-SHA256 signed OAuth states (`bstate.*`), codes (`bcode.*`), 30-day access tokens (`bat.*`), and 365-day refresh tokens (`brt.*`).<br/>• `verifyCloudflareOidcToken()`: Validates Cloudflare Access OIDC tokens via RS256 Web Crypto JWKS and `/userinfo` with 5-minute edge caching. | **On-Demand (Real-Time):** Wakes up instantly (<1 millisecond) whenever any tool, browser dashboard, or OAuth client sends an HTTP request to `brain.tsimon.me`. |
-| **[src/dashboard.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/dashboard.ts)**<br/>*The Cognitive NOC Web UI* | Renders the interactive browser dashboard for inspecting memories, Knowledge Graph nodes/edges, Active Memory Governance & Semantic Contradiction Triage (`memory_conflicts`), overnight mutation diffs, consolidation runs, and live 4-way RRF search. | • `renderDashboardHtml()`: Generates the zero-secret single-page NOC application served at `GET /mcp?ui=1`, `/dashboard`, and `/ui`, communicating exclusively over WAF-safe `POST /mcp?noc=<action>` requests (with automatic `?reset=1` history cleanup after session lock). | **On-Demand (Real-Time):** Rendered whenever you open `https://brain.tsimon.me/mcp?ui=1` or `http://127.0.0.1:8765/dashboard`. |
+| **[src/index.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/index.ts)**<br/>*The Front Door, OAuth 2.1 Proxy & NOC Router* | Welcomes incoming connections at `brain.tsimon.me`, runs the Dual-Mode Security Gate (`MCP_BEARER_TOKEN` Fast-Path + Signed OAuth 2.0/OIDC), propagates `X-Brain-Client-Id` headers, serves the Cognitive NOC UI (`/mcp?ui=1`), and routes JSON-mode MCP requests to your Brain vault. | • `fetch()`: Handles static browser probes (`/favicon.ico`), serves public OAuth 2.0/2.1 discovery (`/.well-known/oauth-*`) and proxy routes (`/authorize`, `/callback`, `/token`, `/userinfo`, `/register`), multiplexes NOC dashboard AJAX calls (`POST /mcp?noc=<action>`), enforces the Dual-Mode Auth Gate, and runs `WebStandardStreamableHTTPServerTransport` (`enableJsonResponse: true`).<br/>• `createBrainMcpServer()`: Registers all **9 Tools** (`forget_memory`, `get_overnight_diff`, `hybrid_recall`, `log_decision`, `log_episodic_event`, `record_outcome`, `remember_fact`, `resolve_conflict`, `validate_memory`) with `X-Brain-Client-Id` default attribution, **3 Resources** (`brain://decisions/active`, `brain://telemetry/status`, `brain://audit/overnight`), and **2 Prompts** (`checkpoint-session`, `hydrate-morning-session`).<br/>• `createSignedToken()` & `verifySignedToken()`: Mints and verifies HMAC-SHA256 signed OAuth states (`bstate.*`), codes (`bcode.*`), 30-day access tokens (`bat.*`), and 365-day refresh tokens (`brt.*`).<br/>• `verifyCloudflareOidcToken()`: Validates Cloudflare Access OIDC tokens via RS256 Web Crypto JWKS and `/userinfo` with 5-minute edge caching. | **On-Demand (Real-Time):** Wakes up instantly (<1 millisecond) whenever any tool, browser dashboard, or OAuth client sends an HTTP request to `brain.tsimon.me`. |
+| **[src/dashboard.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/dashboard.ts)**<br/>*The Cognitive NOC Web UI* | Renders the interactive browser dashboard for inspecting the 6 Connected Client Surfaces, federated databases, Knowledge Graph nodes/edges, Active Memory Governance & Semantic Contradiction Triage (`memory_conflicts`), overnight mutation diffs, consolidation runs, and live 4-way RRF search. | • `renderDashboardHtml()`: Generates the zero-secret single-page NOC application served at `GET /mcp?ui=1`, `/dashboard`, and `/ui`, communicating exclusively over WAF-safe `POST /mcp?noc=<action>` requests (with automatic `?reset=1` history cleanup after session lock). | **On-Demand (Real-Time):** Rendered whenever you open `https://brain.tsimon.me/mcp?ui=1` or `http://127.0.0.1:8765/dashboard`. |
 | **[src/memory-do.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/memory-do.ts)**<br/>*The Master Librarian, Governance Auditor & Nightly Dreamer (`BrainMemoryDO`)* | Your personal, permanent Brain vault on Cloudflare. Holds the SQLite database, coordinates AI embeddings, runs 4-way search + neural reranking, enforces Active Memory Governance (`memory_conflicts`), tracks mutation audits/rollbacks, and runs the 3:00 AM nightly sleep cycle. | • `constructor()`: Sets up all 9 database tables & triggers safely before taking requests and checks that the 3:00 AM alarm is set.<br/>• `rememberFact()` & `rememberFactsBatch()`: Turns facts into 1024-dim `bge-m3` vectors, records before/after audit diffs in `memory_mutations`, flags conflicting functional Knowledge Graph triples (`triple_conflict`), updates SQLite + KG triples, and indexes in Cloudflare Vectorize.<br/>• `hybridRecall()`: Coordinates 4-way search across the Brain and `kb.tsimon.me`, runs Stage-2 Cross-Encoder Neural Reranking (`@cf/baai/bge-reranker-base`), expands 1-hop Mind-Map neighbors, increments `access_count`, and compiles `<brain_context>`.<br/>• `auditContradictionsNow()`, `resolveMemoryConflict()`, `getMemoryConflicts()`: Runs deterministic KG + Llama 3.3 70B semantic contradiction checks (protecting `node:rpi5` and `service:rpi5-qdrant-knowledge-hub`) and executes 15-second `keep` / `supersede` / `merge` decisions.<br/>• `getOvernightDiff()` & `rollbackMutation()`: Produces morning hydration briefings (including pending `memory_conflicts`) and restores prior memory/vector states on rollback.<br/>• `getDashboardSnapshot()`, `getConsolidationLogs()`, `reindexMemories()`, `runConsolidationNow()`: Powers the Cognitive NOC Dashboard and CLI audit tools.<br/>• `logDecision()` & `logEpisodicEvent()`: Saves ADRs and raw daytime notes.<br/>• `alarm()`: **The 3:00 AM Sleep Cycle**—summarizes unconsolidated daytime notes using `Llama 3.3 70B`, audits for semantic contradictions against existing memories/triples/ADRs, logs run telemetry in `consolidation_runs`, updates PageRank scores, and re-arms the alarm. | • **On-Demand (Real-Time):** Whenever `src/index.ts` routes an MCP tool, resource, or NOC action to it.<br/>• **Scheduled Daily at `03:00:00 AM America/La_Paz` (`07:00:00 UTC`):** The `alarm()` method wakes up automatically every 24 hours. |
 | **[src/federation.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/federation.ts)**<br/>*The Archive Bridge, Reranker & Suitcase Packer* | Searches the 14,422-record `kb.tsimon.me` archive, merges all 4 search lists using RRF + `@cf/baai/bge-reranker-base`, and packs the final `<brain_context>` within your token budget. | • `estimateTokens()` & `buildSafeFts5Query()`: Estimates token counts and sanitizes natural-language FTS5 queries.<br/>• `queryKbArchive()` & `ingestKbArchiveBatch()`: Runs parallel D1 `kb_fts` + 768-dim `archive-kb-index` vector search hydrated via `rel_path`, and supports batch archive ingestion.<br/>• `KbFederationService.searchKb()`: Internal `WorkerEntrypoint` for zero-latency cross-Worker search.<br/>• `fuseBrainAndKb()`: Combines all 4 search lists via Weighted RRF ($k=60$), executes Stage-2 Cross-Encoder Neural Reranking (`bge-reranker-base`) on top candidates, promotes #1 signal leaders, and packs `<brain_context>`. | **On-Demand (Real-Time):** Runs in parallel inside every `hybrid_recall` request. |
 | **[src/schema.ts](file:///c:/Users/simon/Workspaces/gemini-brain/src/schema.ts)**<br/>*The Database Blueprint & Search Formulas* | Defines the 9 database tables inside the Brain, automatic FTS5 sync triggers, and parameterized SQL for lexical search and Mind-Map traversal. | • `SCHEMA_DDL`: Creates `memories`, `memories_fts`, `entities`, `edges`, `decisions`, `episodic_logs`, `memory_mutations`, `consolidation_runs`, and `memory_conflicts`, plus **3 automatic triggers** (`trg_memories_ai`, `trg_memories_ad`, `trg_memories_au`).<br/>• `LEXICAL_HYBRID_SQL` & `GRAPH_EXPANSION_SQL`: Scores BM25 word matches with age decay and walks 1-hop Mind-Map connections ordered by `pagerank_score`. | • **On Cold Start:** `SCHEMA_DDL` runs once when `BrainMemoryDO` wakes up.<br/>• **On Every Write / Recall:** Triggers and SQL queries execute in real time. |
 | **[brain-dashboard.ps1](file:///c:/Users/simon/Workspaces/gemini-brain/brain-dashboard.ps1)**, **[brain_dashboard_server.py](file:///c:/Users/simon/Workspaces/gemini-brain/brain_dashboard_server.py)** & **[brain_monitor.py](file:///c:/Users/simon/Workspaces/gemini-brain/brain_monitor.py)**<br/>*Local NOC Proxy & CLI Audit / Triage Tools* | Provides a local Zero-WAF proxy server (`http://127.0.0.1:8765/dashboard`) and terminal TUI for auditing overnight diffs, 15s contradiction triage (`triage` / `hydrate`), consolidation logs, and rolling back mutations. | • Reads `MCP_BEARER_TOKEN` from `.dev.vars` locally and proxies dashboard/audit/triage requests to `brain.tsimon.me`. | **On-Demand (Manual):** Run `.\brain-dashboard.ps1`, `.\brain-monitor.ps1`, or `python brain_monitor.py triage` from PowerShell. |
-| **[rpi-sync/brain_watcher.py](file:///c:/Users/simon/Workspaces/gemini-brain/rpi-sync/brain_watcher.py)**<br/>*The Raspberry Pi 5 Home Lab Courier* | Watches your Raspberry Pi 5 folders and local Qdrant database 24/7, slices Python code and Markdown notes into smart chunks, and uploads changes to `brain.tsimon.me`. | • `_load_qdrant_credentials()`, `LocalSyncStateDB`, `chunk_python_file()`, `chunk_markdown_file()`, `BrainMcpClient.call_tool()`, `QdrantBrainFederator.sync_collection()`, `BrainSyncHandler`, `main()`. | • **At Boot / Service Start:** Initial directory scan + Qdrant scroll.<br/>• **Real-Time:** `2.5s` debounce after `.py` or `.md` edits.<br/>• **Every 5 Minutes (`300s`):** Qdrant scroll sync. |
+| **[rpi-sync/brain_watcher.py](file:///c:/Users/simon/Workspaces/gemini-brain/rpi-sync/brain_watcher.py)**<br/>*The Raspberry Pi 5 Home Lab Courier* | Watches your Raspberry Pi 5 folders, local Qdrant database, and RPi5 CLI transcripts 24/7, slices Python code and Markdown notes (with heading-hierarchy breadcrumbs) into smart chunks, and uploads changes to `brain.tsimon.me`. | • `_load_qdrant_credentials()`, `LocalSyncStateDB`, `chunk_python_file()`, `chunk_markdown_file()`, `BrainMcpClient.call_tool()`, `QdrantBrainFederator.sync_collection()`, RPi5 CLI transcript harvester (`antigravity-cli-rpi5`), `BrainSyncHandler`, `main()`. | • **At Boot / Service Start:** Initial directory scan + Qdrant scroll.<br/>• **Real-Time:** `2.5s` debounce after `.py` or `.md` edits.<br/>• **Every 5 Minutes (`300s`):** Qdrant scroll sync.<br/>• **Every 15 Minutes (`900s`):** Idle RPi5 CLI transcript harvest (`CLI_SYNC_ENABLED=true`). |
 | **[.github/workflows/deploy.yml](file:///c:/Users/simon/Workspaces/gemini-brain/.github/workflows/deploy.yml)** & **[test_brain_mcp.py](file:///c:/Users/simon/Workspaces/gemini-brain/test_brain_mcp.py)**<br/>*CI/CD & Live E2E Verifier* | Type-checks, deploys updates to Cloudflare, and verifies discovery, write, recall, and federation end-to-end. | • Runs `wrangler types`, `tsc --noEmit`, `wrangler deploy`, and the 4-stage live Python verification suite. | **On Git Push to `main`** or **On-Demand** via `python test_brain_mcp.py`. |
 
 ### Master Schedule & Trigger Timeline
@@ -474,7 +481,8 @@ The diagram below illustrates the complete production architecture across client
 flowchart TB
     subgraph Clients["MCP Client & Operator Tier"]
         C_AG["Google Antigravity IDE<br/>clientId: antigravity-win11 (PSK Fast-Path)"]
-        C_CLI["Gemini CLI<br/>clientId: gemini-cli (PSK Fast-Path)"]
+        C_CLI["Gemini CLI (Win11)<br/>clientId: gemini-cli-win11 (PSK Fast-Path)"]
+        C_RPICLI["Raspberry Pi 5 Gemini CLI<br/>clientId: antigravity-cli-rpi5 (PSK + X-Brain-Client-Id)"]
         C_WEB["Gemini Web App<br/>clientId: gemini-web-oauth (OAuth 2.0 / OIDC)"]
         C_NOC["Cognitive NOC Web Dashboard<br/>GET /mcp?ui=1 & POST /mcp?noc=<action>"]
         C_TEST["E2E Verifier & CLI Monitor<br/>(test_brain_mcp.py / brain_monitor.py)"]
@@ -499,7 +507,7 @@ flowchart TB
         AUTH["Dual-Mode Auth Gate<br/>(0ms PSK + HMAC-SHA256 bat.* + RS256 OIDC)"]
         NOC_MUX["WAF-Safe NOC Multiplexer<br/>(GET /mcp?ui=1 & POST /mcp?noc=<action>)"]
         CARD["SEP-2127 Discovery Card<br/>/server-card & /.well-known/mcp/server-card.json"]
-        MCP["McpServer v1.7.0 (package.json)<br/>(WebStandardStreamableHTTPServerTransport JSON-Mode)"]
+        MCP["McpServer v1.7.3 (package.json)<br/>(WebStandardStreamableHTTPServerTransport JSON-Mode)"]
         FED_SVC["KbFederationService<br/>(WorkerEntrypoint Cap'n Proto RPC)"]
     end
 
@@ -534,7 +542,7 @@ flowchart TB
 
     C_WEB <-->|"OAuth 2.0 PKCE Handshake"| OAUTH_DISC
     OAUTH_DISC <-->|"OIDC Login & Callback"| ZT_OIDC
-    C_AG & C_CLI & C_WEB & C_TEST -->|"HTTPS JSON-RPC 2.0 (POST /mcp)"| AUTH
+    C_AG & C_CLI & C_RPICLI & C_WEB & C_TEST -->|"HTTPS JSON-RPC 2.0 (POST /mcp)"| AUTH
     C_NOC -->|"HTTPS AJAX (POST /mcp?noc=1)"| NOC_MUX
     BW -->|"HTTPS JSON-RPC 2.0 (Exp Backoff)"| AUTH
     AUTH --> CARD
@@ -585,6 +593,7 @@ flowchart TB
   - Multiplexes all browser AJAX actions (`dashboard`, `recall`, `consolidate`, `reindex`, `rollback`, `conflicts`, `audit_conflicts`, `resolve_conflict`) over `POST /mcp?noc=<action>` (`X-Brain-Noc-Action`), returning HTTP `200 OK` with `{ ok: false, authError }` on credential mismatch so Cloudflare Super Bot Fight Mode never locks out operator IPs with HTTP `403`.
 - **Dashboard Capabilities:**
   - Live telemetry cards (active memories across all namespaces, ADRs, Knowledge Graph entities/edges, pending `memory_conflicts`, unconsolidated episodic logs, and next `07:00 UTC` alarm countdown).
+  - **Connected Client Surfaces** column on Tab 1 (`1. NOC Topology, Surfaces & Knowledge Graph`) tracking live mutations, episodic events, `clientId`, and last activity across all 6 surfaces in operational priority order: `Google Antigravity IDE / 2.0`, `Raspberry Pi 5 Home Lab (node:rpi5)`, `Raspberry Pi 5 Gemini CLI`, `Gemini Web App Bridge`, `Nocturnal Dreamer (Llama 3.3 70B)`, and `Gemini CLI Terminal (Win11)`.
   - Interactive force-directed Knowledge Graph canvas and filterable memory inspector.
   - **Active Memory Governance & Semantic Contradiction Triage (`memory_conflicts`)** panel in Tab 3 with 1-click **`✓ Keep Existing`**, **`⚡ Supersede Old`**, **`🔀 Merge Both`**, and **`🔍 Run Contradiction Audit Now`** controls.
   - Overnight Mutation Diff viewer (`INSERT`, `UPDATE`, `DELETE`, `CONSOLIDATE`, `ROLLBACK`) with side-by-side before/after diffs and 1-click atomic rollback.
@@ -1020,6 +1029,11 @@ The installer creates `/etc/gemini-brain/watcher.env` with `0600` (`root:root`) 
 | `QDRANT_COLLECTION` | `knowledge_hub` | Qdrant collection scrolled for federation into `BrainMemoryDO`. |
 | `QDRANT_ENV_FILE` | `/opt/edge-rag-hub/.env` | Fallback dotenv file read for `QDRANT_API_KEY` and `QDRANT_COLLECTION`. |
 | `QDRANT_SYNC_INTERVAL_SEC` | `300.0` | Interval in seconds (5 minutes) between Qdrant collection scroll passes. |
+| `CLI_SYNC_ENABLED` | `true` | Enables automatic episodic harvesting of idle RPi5 Antigravity/Gemini CLI transcripts. |
+| `CLI_CLIENT_ID` | `antigravity-cli-rpi5` | Provenance `clientId` stamped on harvested RPi5 CLI episodic checkpoints. |
+| `CLI_GEMINI_DIR` | `/root/.gemini` | Root `.gemini` directory scanned for `antigravity-cli/brain` and `tmp/*/chats` transcripts. |
+| `CLI_SYNC_INTERVAL_SEC` | `900.0` | Interval in seconds (15 minutes) between RPi5 CLI transcript harvest sweeps. |
+| `CLI_SESSION_IDLE_SEC` | `180.0` | Minimum transcript idle time (3 minutes) before harvesting to avoid mid-turn checkpoints. |
 
 #### Ignored Directories & Security Filters
 `brain_watcher.py` automatically excludes:
@@ -1041,17 +1055,18 @@ ssh pi "rm -f ~/.cache/gemini-brain/sync_state.db && sudo systemctl restart gemi
 
 ---
 
-### 1.2 Windows 11 Workstation (`antigravity-win11`) MCP Client Configuration
+### 1.2 Windows 11 (`antigravity-win11`) & Raspberry Pi 5 (`antigravity-cli-rpi5`) MCP Client Configuration
 
-Register the server in `C:\Users\simon\.gemini\settings.json` and `C:\Users\simon\.gemini\config\mcp_config.json`:
+Register the server in `C:\Users\simon\.gemini\settings.json` / `C:\Users\simon\.gemini\config\mcp_config.json` (Windows 11) or `/root/.gemini/config/mcp_config.json` / `/root/.gemini/settings.json` (Raspberry Pi 5). Include the optional `X-Brain-Client-Id` header so all write/governance MCP calls automatically default to that host's `clientId` even when omitted in tool arguments:
 
 ```json
 {
   "mcpServers": {
-    "gemini-brain": {
-      "httpUrl": "https://brain.tsimon.me/mcp",
+    "brain": {
+      "serverUrl": "https://brain.tsimon.me/mcp",
       "headers": {
-        "Authorization": "Bearer <YOUR_MCP_BEARER_TOKEN>"
+        "Authorization": "Bearer <YOUR_MCP_BEARER_TOKEN>",
+        "X-Brain-Client-Id": "antigravity-cli-rpi5"
       }
     }
   }

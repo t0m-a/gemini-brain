@@ -21,6 +21,9 @@ MCP_BEARER_TOKEN=REPLACE_WITH_MCP_BEARER_TOKEN
 WATCH_DIRS=/opt/edge-rag-hub,/opt/gemini-brain
 BRAIN_NAMESPACE=homelab
 BRAIN_CLIENT_ID=rpi5-debian13-daemon
+CLI_SYNC_ENABLED=true
+CLI_CLIENT_ID=antigravity-cli-rpi5
+CLI_GEMINI_DIR=/root/.gemini
 EOF
   sudo chmod 600 "${ENV_FILE}"
   echo "IMPORTANT: Update MCP_BEARER_TOKEN in ${ENV_FILE}"

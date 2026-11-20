@@ -307,6 +307,7 @@ function inferClientId(
     return "nocturnal-consolidator";
   }
   const uri = (sourceUri || "").toLowerCase();
+  if (uri.startsWith("rpi5-cli://")) return "antigravity-cli-rpi5";
   if (uri.startsWith("rpi5://")) return "rpi5-debian13-daemon";
   if (uri.startsWith("qdrant://")) return "rpi5-qdrant-federator";
   if (uri.includes("takeout")) return "takeout-ingestor";

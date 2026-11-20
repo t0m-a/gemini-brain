@@ -9,7 +9,7 @@
  *          5. Nocturnal 03:00 AM Sleep Cycle, Episodic Queue & Before/After Mutation Diff Viewer with 1-Click Rollback
  */
 
-export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.2"): string {
+export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.3"): string {
   return `<!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
@@ -859,7 +859,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         <div class="panel">
           <div class="panel-header">
             <div class="panel-title">🖥️ Connected Client Surfaces</div>
-            <span class="badge badge-cyan" id="surfaces-count-badge">5 Surfaces</span>
+            <span class="badge badge-cyan" id="surfaces-count-badge">6 Surfaces</span>
           </div>
           <div class="panel-body" id="surfaces-container">
             <div style="color: var(--text-2); font-size: 12px;">Loading surface telemetry...</div>
@@ -1359,11 +1359,28 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         return { muts, epis, pending, lastTs };
       }
 
-      const agStats = aggregateSurface((c) => c.toLowerCase().includes("antigravity"));
-      const cliStats = aggregateSurface((c) => c.toLowerCase().includes("gemini-cli") || c.toLowerCase().includes("cli"));
+      const isRpiCli = (c) => {
+        const l = c.toLowerCase();
+        return (l.includes("rpi5") || l.includes("rpi")) && (l.includes("cli") || l.includes("antigravity"));
+      };
+      const agStats = aggregateSurface((c) => {
+        const l = c.toLowerCase();
+        return l.includes("antigravity") && !isRpiCli(c);
+      });
+      const cliStats = aggregateSurface((c) => {
+        const l = c.toLowerCase();
+        return !isRpiCli(c) && !l.includes("antigravity") && (l.includes("gemini-cli") || l.includes("cli"));
+      });
+      const rpiCliStats = aggregateSurface(isRpiCli);
       const webStats = aggregateSurface((c) => c.toLowerCase().includes("web"));
-      const rpiStats = aggregateSurface((c) => c.toLowerCase().includes("rpi5") || c.toLowerCase().includes("qdrant"));
-      const sleepStats = aggregateSurface((c) => c.toLowerCase().includes("nocturnal") || c.toLowerCase().includes("consolidat"));
+      const rpiStats = aggregateSurface((c) => {
+        const l = c.toLowerCase();
+        return !isRpiCli(c) && (l.includes("rpi5") || l.includes("qdrant"));
+      });
+      const sleepStats = aggregateSurface((c) => {
+        const l = c.toLowerCase();
+        return l.includes("nocturnal") || l.includes("consolidat");
+      });
 
       const rpiPreserved = data.surfaces.rpi5Preserved || { preservedEntities: 0, preservedActiveEdges: 0 };
 
@@ -1379,28 +1396,8 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           lastTs: agStats.lastTs
         },
         {
-          name: "⌨️ Gemini CLI Terminal",
-          clientId: "gemini-cli-win11",
-          badge: "badge-cyan",
-          status: "CONNECTED (MCP v2)",
-          desc: "Direct shell & CLI workflows sharing real-time BrainMemoryDO state.",
-          muts: cliStats.muts,
-          epis: cliStats.epis,
-          lastTs: cliStats.lastTs
-        },
-        {
-          name: "🌐 Gemini Web App Bridge",
-          clientId: "gemini-web-architect",
-          badge: "badge-violet",
-          status: "CLIPBOARD JSON-RPC BRIDGE",
-          desc: "3-Step PowerShell clipboard hydrator & checkpoint committer.",
-          muts: webStats.muts,
-          epis: webStats.epis,
-          lastTs: webStats.lastTs
-        },
-        {
           name: "🍓 Raspberry Pi 5 Home Lab (node:rpi5)",
-          clientId: "rpi5-watcher / qdrant",
+          clientId: "rpi5-debian13-daemon / qdrant",
           badge: rpiPreserved.rpiSyncEnabled === false ? "badge-amber" : "badge-emerald",
           status: rpiPreserved.rpiSyncEnabled === false ? "OFFLINE • GRAPH PRESERVED" : "CONNECTED • ACTIVE (EDGE SYNC)",
           desc: (rpiPreserved.rpiSyncEnabled === false
@@ -1413,6 +1410,26 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           lastTs: rpiStats.lastTs
         },
         {
+          name: "🍓⌨️ Raspberry Pi 5 Gemini CLI",
+          clientId: "antigravity-cli-rpi5",
+          badge: "badge-cyan",
+          status: "CONNECTED (MCP v2)",
+          desc: "Interactive Antigravity / Gemini CLI terminal on Raspberry Pi 5 (node:rpi5) with X-Brain-Client-Id & session sync.",
+          muts: rpiCliStats.muts,
+          epis: rpiCliStats.epis,
+          lastTs: rpiCliStats.lastTs
+        },
+        {
+          name: "🌐 Gemini Web App Bridge",
+          clientId: "gemini-web-architect",
+          badge: "badge-violet",
+          status: "OAUTH 2.1 + BRIDGE",
+          desc: "Native Gemini Web OAuth 2.1 MCP connection & clipboard checkpoint hydrator.",
+          muts: webStats.muts,
+          epis: webStats.epis,
+          lastTs: webStats.lastTs
+        },
+        {
           name: "🌙 Nocturnal Dreamer (Llama 3.3 70B)",
           clientId: "nocturnal-consolidator",
           badge: "badge-cyan",
@@ -1421,6 +1438,16 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           muts: sleepStats.muts,
           epis: (data.sleepCycle.consolidationRuns || []).length,
           lastTs: sleepStats.lastTs
+        },
+        {
+          name: "⌨️ Gemini CLI Terminal (Win11)",
+          clientId: "gemini-cli-win11",
+          badge: "badge-cyan",
+          status: "CONNECTED (MCP v2)",
+          desc: "Direct Windows 11 shell & CLI workflows sharing real-time BrainMemoryDO state.",
+          muts: cliStats.muts,
+          epis: cliStats.epis,
+          lastTs: cliStats.lastTs
         }
       ];
 
@@ -1432,6 +1459,9 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
             <div class="surface-top">
               <span class="surface-name">\${escapeHtml(s.name)}</span>
               <span class="badge \${s.badge}">\${escapeHtml(s.status)}</span>
+            </div>
+            <div style="font-size: 10.5px; color: var(--cyan); font-family: var(--font-mono); margin-bottom: 4px;">
+              clientId: \${escapeHtml(s.clientId)}
             </div>
             <div style="font-size: 11.5px; color: var(--text-2);">\${escapeHtml(s.desc)}</div>
             <div class="surface-meta">

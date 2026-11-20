@@ -31,11 +31,26 @@ import {
 
 export { BrainMemoryDO, KbFederationService };
 
-function createBrainMcpServer(env: Env) {
+function extractHeaderClientId(headers: Headers): string | undefined {
+  const raw = headers.get("X-Brain-Client-Id") || headers.get("x-brain-client-id");
+  if (!raw) return undefined;
+  const cleaned = raw.trim();
+  if (!cleaned || cleaned.length > 80 || /[\r\n\0]/.test(cleaned)) {
+    return undefined;
+  }
+  return cleaned;
+}
+
+function createBrainMcpServer(env: Env, defaultClientId?: string) {
   const server = new McpServer({
     name: "gemini-brain-mcp",
     version: BRAIN_VERSION
   });
+
+  const resolveClientId = (explicit?: string): string | undefined => {
+    const trimmed = explicit?.trim();
+    return trimmed || defaultClientId;
+  };
 
   // Always route to the singleton Durable Object instance
   const getBrainStub = () => {
@@ -66,12 +81,15 @@ function createBrainMcpServer(env: Env) {
         clientId: z
           .string()
           .optional()
-          .describe("Client identifier recording the deletion (default: 'mcp-forget')")
+          .describe("Client identifier recording the deletion (default: X-Brain-Client-Id header or 'mcp-forget')")
       })
     },
     async (args) => {
       const stub = getBrainStub();
-      const result = await stub.forgetMemory(args);
+      const result = await stub.forgetMemory({
+        ...args,
+        clientId: resolveClientId(args.clientId)
+      });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
       };
@@ -94,7 +112,7 @@ function createBrainMcpServer(env: Env) {
         clientId: z
           .string()
           .optional()
-          .describe("Optional filter by clientId (e.g., 'antigravity-win11-1', 'gemini-cli', 'gemini-web-architect')"),
+          .describe("Optional filter by clientId (e.g., 'antigravity-win11', 'antigravity-cli-rpi5', 'gemini-cli-win11', 'gemini-web-architect')"),
         namespace: z
           .string()
           .optional()
@@ -210,7 +228,7 @@ function createBrainMcpServer(env: Env) {
     }
   );
 
-  // Tool 4 (Alphabetical Order #4): log_episodic_event
+  // Tool 5 (Alphabetical Order #5): log_episodic_event
   server.registerTool(
     "log_episodic_event",
     {
@@ -220,7 +238,8 @@ function createBrainMcpServer(env: Env) {
         sessionId: z.string().describe("Active session identifier"),
         clientId: z
           .string()
-          .describe("Client identifier (e.g., 'antigravity-win11-1', 'gemini-cli', 'gemini-web-architect')"),
+          .optional()
+          .describe("Client identifier (e.g., 'antigravity-win11', 'antigravity-cli-rpi5', 'gemini-cli-win11', 'gemini-web-architect'; defaults to X-Brain-Client-Id header)"),
         eventType: z
           .enum(["tool_call", "observation", "checkpoint", "error_resolution"])
           .describe("Type of episodic event"),
@@ -229,7 +248,10 @@ function createBrainMcpServer(env: Env) {
     },
     async (args) => {
       const stub = getBrainStub();
-      const result = await stub.logEpisodicEvent(args);
+      const result = await stub.logEpisodicEvent({
+        ...args,
+        clientId: resolveClientId(args.clientId) || "mcp-client"
+      });
       return {
         content: [
           {
@@ -291,13 +313,14 @@ function createBrainMcpServer(env: Env) {
         clientId: z
           .string()
           .optional()
-          .describe("Client identifier (default: 'mcp-outcome')")
+          .describe("Client identifier (default: X-Brain-Client-Id header or 'mcp-outcome')")
       })
     },
     async (args) => {
       const stub = getBrainStub();
       const result = await stub.recordOutcome({
         ...args,
+        clientId: resolveClientId(args.clientId),
         operatorFeedback:
           args.operatorFeedback === -1 || args.operatorFeedback === 0 || args.operatorFeedback === 1
             ? args.operatorFeedback
@@ -338,7 +361,7 @@ function createBrainMcpServer(env: Env) {
         clientId: z
           .string()
           .optional()
-          .describe("Client identifier for mutation audit tracking (e.g., 'antigravity-win11-1', 'gemini-cli', 'gemini-web-architect')"),
+          .describe("Client identifier for mutation audit tracking (e.g., 'antigravity-win11', 'antigravity-cli-rpi5', 'gemini-cli-win11', 'gemini-web-architect'; defaults to X-Brain-Client-Id header)"),
         importance: z
           .number()
           .min(0)
@@ -373,7 +396,10 @@ function createBrainMcpServer(env: Env) {
     },
     async (args) => {
       const stub = getBrainStub();
-      const result = await stub.rememberFact(args);
+      const result = await stub.rememberFact({
+        ...args,
+        clientId: resolveClientId(args.clientId)
+      });
       return {
         content: [
           {
@@ -385,7 +411,7 @@ function createBrainMcpServer(env: Env) {
     }
   );
 
-  // Tool 6 (Alphabetical Order #6): resolve_conflict
+  // Tool 8 (Alphabetical Order #8): resolve_conflict
   server.registerTool(
     "resolve_conflict",
     {
@@ -411,7 +437,7 @@ function createBrainMcpServer(env: Env) {
         clientId: z
           .string()
           .optional()
-          .describe("Client identifier recording the resolution (default: 'mcp-governance-triage')")
+          .describe("Client identifier recording the resolution (default: X-Brain-Client-Id header or 'mcp-governance-triage')")
       })
     },
     async (args) => {
@@ -453,7 +479,7 @@ function createBrainMcpServer(env: Env) {
         conflictId: args.conflictId,
         action: args.action,
         mergedContent: args.mergedContent,
-        clientId: args.clientId || "mcp-governance-triage"
+        clientId: resolveClientId(args.clientId) || "mcp-governance-triage"
       });
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }]
@@ -492,12 +518,15 @@ function createBrainMcpServer(env: Env) {
         clientId: z
           .string()
           .optional()
-          .describe("Client identifier recording the validation (default: 'mcp-validate')")
+          .describe("Client identifier recording the validation (default: X-Brain-Client-Id header or 'mcp-validate')")
       })
     },
     async (args) => {
       const stub = getBrainStub();
-      const result = await stub.validateMemory(args);
+      const result = await stub.validateMemory({
+        ...args,
+        clientId: resolveClientId(args.clientId)
+      });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
       };
@@ -704,7 +733,7 @@ export default {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
       "Access-Control-Allow-Headers":
-        "Authorization, Content-Type, Accept, Mcp-Session-Id, Mcp-Protocol-Version, X-Brain-Noc-Action, X-Brain-Token",
+        "Authorization, Content-Type, Accept, Mcp-Session-Id, Mcp-Protocol-Version, X-Brain-Noc-Action, X-Brain-Token, X-Brain-Client-Id",
       "Access-Control-Expose-Headers": "WWW-Authenticate, Mcp-Session-Id"
     };
 
@@ -1448,6 +1477,38 @@ export default {
             "brain.tsimon.me (BrainMemoryDO + gemini-brain-bge-m3 1024-dim + bge-reranker-base)",
             "kb.tsimon.me (D1 archive-knowledge-db + archive-kb-index 768-dim)"
           ],
+          client_sources: [
+            {
+              clientId: "antigravity-win11",
+              surface: "Google Antigravity IDE / 2.0 (Win11)",
+              transport: "mcp-v2-psk"
+            },
+            {
+              clientId: "gemini-cli-win11",
+              surface: "Gemini CLI Terminal (Win11)",
+              transport: "mcp-v2-psk"
+            },
+            {
+              clientId: "antigravity-cli-rpi5",
+              surface: "Raspberry Pi 5 Gemini CLI Terminal (node:rpi5)",
+              transport: "mcp-v2-psk"
+            },
+            {
+              clientId: "gemini-web-architect",
+              surface: "Gemini Web App (OAuth 2.1 / Bridge)",
+              transport: "mcp-v2-oauth"
+            },
+            {
+              clientId: "rpi5-debian13-daemon",
+              surface: "Raspberry Pi 5 AST/Markdown & Qdrant Sync Daemon (node:rpi5)",
+              transport: "mcp-v2-psk"
+            },
+            {
+              clientId: "nocturnal-consolidator",
+              surface: "Nocturnal Dreamer (Llama 3.3 70B Alarm)",
+              transport: "durable-object-alarm"
+            }
+          ],
           tools: [
             "forget_memory",
             "get_overnight_diff",
@@ -1954,7 +2015,8 @@ export default {
       headers: normalizedHeaders
     });
 
-    const server = createBrainMcpServer(env);
+    const headerClientId = extractHeaderClientId(request.headers);
+    const server = createBrainMcpServer(env, headerClientId);
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true
