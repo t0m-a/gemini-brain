@@ -245,7 +245,7 @@ Trigger the built-in MCP prompts at the start or end of a coding session:
 
 ## 2. Using the Brain in the Gemini Web App (Native OAuth 2.0 Connector & CLI Bridge)
 
-As of **`gemini-brain` v1.5.0**, the **Gemini Web App** connects **natively** to `https://brain.tsimon.me/mcp` using standard **OAuth 2.0 / 2.1 backed by Cloudflare Zero Trust OIDC** (`wandering-grass-64c7.cloudflareaccess.com`)—giving you live, direct access to all 6 MCP tools inside Gemini Web chat without manual copy/pasting!
+As of **`gemini-brain` v1.5.0**, the **Gemini Web App** connects **natively** to `https://brain.tsimon.me/mcp` using standard **OAuth 2.0 / 2.1 backed by Cloudflare Zero Trust OIDC** (`zero-trust-subdmain-XXXX.cloudflareaccess.com`)—giving you live, direct access to all 6 MCP tools inside Gemini Web chat without manual copy/pasting!
 
 ### 2.1 Primary Method: Direct Native OAuth 2.0 Connection in Gemini Web App
 
@@ -255,7 +255,7 @@ sequenceDiagram
     actor You as 👤 You (Gemini Web Browser)
     participant Gem as 🌐 Gemini Web App (MCP Client)
     participant Brain as 🧠 brain.tsimon.me (OAuth 2.1 Proxy & MCP RS)
-    participant CF as 🛡️ Cloudflare Zero Trust OIDC (wandering-grass-64c7)
+    participant CF as 🛡️ Cloudflare Zero Trust OIDC (zero-trust-subdmain-XXXX)
 
     Gem->>Brain: 1. Probe POST /mcp & GET /.well-known/oauth-*
     Brain-->>Gem: 2. Return RFC 9728 & RFC 8414 OAuth Discovery Metadata
@@ -274,10 +274,10 @@ sequenceDiagram
 1. Open the **Gemini Web App** (`gemini.google.com`) and go to the **Connect a custom MCP server** tab.
 2. Enter the following connection details:
    - **MCP Server URL**: `https://brain.tsimon.me/mcp`
-   - **OAuth Client ID**: `9993bd9cb3166c06c0238a160c6e19c516b7e13a83feb285ae00878b74740662`
-   - **OAuth Client Secret**: `<Your Client Secret from Cloudflare Zero Trust > Access controls > Applications > gemini-brain-mcp>`
+   - **OAuth Client ID**: `<Your Client ID from Cloudflare Zero Trust>`
+   - **OAuth Client Secret**: `<Your Client Secret from Cloudflare Zero Trust>`
 3. Click **Connect / Authorize**:
-   - You will be redirected once through your **Cloudflare Zero Trust Login Portal** (`wandering-grass-64c7.cloudflareaccess.com`).
+   - You will be redirected once through your **Cloudflare Zero Trust Login Portal** (`zero-trust-subdmain-XXXXcloudflareaccess.com`).
    - Upon completion, `brain.tsimon.me/token` issues a **30-day HMAC-SHA256 signed `access_token` (`bat.*`)** and **365-day `refresh_token` (`brt.*`)**.
    - All 6 MCP tools (`get_overnight_diff`, `hybrid_recall`, `log_decision`, `log_episodic_event`, `remember_fact`, `resolve_conflict`) execute directly in chat over stateless JSON-mode Streamable HTTP (`enableJsonResponse: true`).
 
@@ -480,8 +480,8 @@ flowchart TB
         C_TEST["E2E Verifier & CLI Monitor<br/>(test_brain_mcp.py / brain_monitor.py)"]
     end
 
-    subgraph CF_ZeroTrust["Cloudflare Zero Trust OIDC (wandering-grass-64c7.cloudflareaccess.com)"]
-        ZT_OIDC["Access for SaaS OIDC Application<br/>clientId: 9993bd9cb316...<br/>/authorization | /token | /jwks | /userinfo"]
+    subgraph CF_ZeroTrust["Cloudflare Zero Trust OIDC (<zero-trust-subdmain-XXXX.cloudflareaccess.com)"]
+        ZT_OIDC["Access for SaaS OIDC Application<br/>clientId: XXXXXXXXXX...<br/>/authorization | /token | /jwks | /userinfo"]
     end
 
     subgraph RPi5["Raspberry Pi 5 Edge Node (pi.tsimon.me / Debian 13)"]
@@ -566,7 +566,7 @@ flowchart TB
   - Normalizes incoming `Accept` headers to `"application/json, text/event-stream"` and strips restrictive browser `Origin` headers (such as `Origin: https://gemini.google.com`) after authentication so web-based MCP clients never encounter `403 Invalid Origin` or `406 Not Acceptable` transport errors.
 - **OAuth 2.0 / 2.1 Discovery & Cloudflare Zero Trust OIDC Proxy ([lines 615–995](file:///c:/Users/simon/Workspaces/gemini-brain/src/index.ts#L615-L995)):**
   - Exposes public RFC 9728 Protected Resource Metadata (`GET /.well-known/oauth-protected-resource`) and RFC 8414 / OpenID Connect Discovery (`GET /.well-known/oauth-authorization-server`, `GET /.well-known/openid-configuration`, `GET /.well-known/jwks.json`).
-  - `GET /authorize`: Enforces `scope="openid email profile"`, wraps the client's dynamic `redirect_uri`, `state`, and PKCE `code_challenge` into an HMAC-SHA256 signed state token (`bstate.*`), and redirects the user to Cloudflare Zero Trust (`https://wandering-grass-64c7.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<CLIENT_ID>/authorization`).
+  - `GET /authorize`: Enforces `scope="openid email profile"`, wraps the client's dynamic `redirect_uri`, `state`, and PKCE `code_challenge` into an HMAC-SHA256 signed state token (`bstate.*`), and redirects the user to Cloudflare Zero Trust (`https://zero-trust-subdmain-XXXX.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<CLIENT_ID>/authorization`).
   - `GET /callback`: Verifies `bstate.*` upon return from Cloudflare Zero Trust login, mints a short-lived HMAC-SHA256 signed authorization code (`bcode.*`), and redirects back to the originating MCP client callback URL.
   - `POST /token`: Validates `bcode.*` (and PKCE `S256` `code_verifier` when present) and issues a **30-day HMAC-SHA256 signed `access_token` (`bat.*`)** and **365-day `refresh_token` (`brt.*`)**, with `redirect: "manual"` enforced on fallback upstream token calls so `302` redirects are never swallowed.
 - **Dual-Mode Auth Gate ([lines 1151–1182](file:///c:/Users/simon/Workspaces/gemini-brain/src/index.ts#L1151-L1182)):**
@@ -960,7 +960,7 @@ sequenceDiagram
     actor User as 👤 Operator Browser
     participant Gemini as 🌐 Gemini Web App (MCP Client)
     participant Worker as 🧠 brain.tsimon.me (src/index.ts)
-    participant CF as 🛡️ Cloudflare Zero Trust OIDC (wandering-grass-64c7)
+    participant CF as 🛡️ Cloudflare Zero Trust OIDC (zero-trust-subdmain-XXXX)
     participant DO as BrainMemoryDO
 
     Gemini->>Worker: POST /mcp (Initial Unauthenticated Probe)
@@ -969,7 +969,7 @@ sequenceDiagram
     Worker-->>Gemini: 200 OK (RFC 9728 & RFC 8414 Metadata)
     Gemini->>Worker: GET /authorize?client_id=...&redirect_uri=<gemini_cb>&state=<s1>&code_challenge=<cc>
     Worker->>Worker: Sign state -> bstate.<payload>.<hmac> (enforcing scope="openid email profile")
-    Worker-->>User: 302 Redirect to wandering-grass-64c7.cloudflareaccess.com/.../authorization
+    Worker-->>User: 302 Redirect to zero-trust-subdmain-XXXX.cloudflareaccess.com/.../authorization
     User->>CF: Complete Zero Trust Login (Email OTP / Identity Provider Policy)
     CF-->>Worker: 302 Redirect to GET /callback?code=<cf_code>&state=bstate.*
     Worker->>Worker: Verify bstate.* HMAC & mint signed code -> bcode.<payload>.<hmac>
@@ -1081,8 +1081,8 @@ Register the server in `C:\Users\simon\.gemini\settings.json` and `C:\Users\simo
 | `KB_DB` | Cloudflare D1 Database | `archive-knowledge-db` (`c0734505-169c-4997-a603-8b3c9d06cab0`) | Federated archive database containing `kb_fts` across 14,422+ documents, emails, spreadsheets, scripts, and CMDB records. |
 | `KB_VECTORIZE` | Cloudflare Vectorize | `archive-kb-index` (`768` dimensions, `cosine`) | Federated semantic vector index for `kb.tsimon.me` archive chunks. |
 | `AI` | Cloudflare Workers AI | `@cf/baai/bge-m3` (`1024d`)<br/>`@cf/baai/bge-base-en-v1.5` (`768d`)<br/>`@cf/baai/bge-reranker-base` *(active Stage-2)*<br/>`@cf/meta/llama-3.3-70b-instruct-fp8-fast` | On-edge neural inference for dual-model embeddings, active Stage-2 cross-encoder reranking (`RERANKER_MODEL`), and nocturnal LLM consolidation. |
-| `OAUTH_CLIENT_ID` | Environment Variable | `9993bd9cb3166c06c0238a160c6e19c516b7e13a83feb285ae00878b74740662` | Cloudflare Access for SaaS OIDC Client ID used for Gemini Web App OAuth 2.0/2.1 connections. |
-| `OAUTH_TEAM_DOMAIN` | Environment Variable | `https://wandering-grass-64c7.cloudflareaccess.com` | Cloudflare Zero Trust team domain hosting the upstream OIDC `/authorization`, `/token`, `/jwks`, and `/userinfo` endpoints. |
+| `OAUTH_CLIENT_ID` | Environment Variable | `client_auth_id_xxxxx` | Cloudflare Access for SaaS OIDC Client ID used for Gemini Web App OAuth 2.0/2.1 connections. |
+| `OAUTH_TEAM_DOMAIN` | Environment Variable | `https://zero-trust-subdmain-XXXX.cloudflareaccess.com` | Cloudflare Zero Trust team domain hosting the upstream OIDC `/authorization`, `/token`, `/jwks`, and `/userinfo` endpoints. |
 
 ### 2.2 Dual-Model Vector Space Isolation & Canonical D1 Hydration (`ADR-04`)
 
