@@ -9,7 +9,7 @@
  *          5. Nocturnal 03:00 AM Sleep Cycle, Episodic Queue & Before/After Mutation Diff Viewer with 1-Click Rollback
  */
 
-export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
+export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.5.1"): string {
   return `<!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
@@ -783,7 +783,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me"): string {
     <div class="brand-group">
       <div class="pulse-dot" id="status-dot"></div>
       <div>
-        <div class="brand-title">🧠 Gemini Brain Cognitive NOC</div>
+        <div class="brand-title">🧠 Gemini Brain Cognitive NOC <span class="badge badge-cyan" style="font-size:10px; vertical-align:middle; margin-left:6px;">v${version}</span></div>
         <div class="brand-sub">brain.${primaryDomain} • BrainMemoryDO + D1 Archive + Dual Vectorize</div>
       </div>
     </div>

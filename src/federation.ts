@@ -19,7 +19,9 @@ export interface RankedCandidate {
   namespace: string;
   rawScore: number;
   importance: number; // 0.0 to 1.0
+  confidence?: number; // 0.0 to 1.0 epistemic certainty (default 1.0)
   updatedAtMs: number;
+  modifiedIso?: string | null;
   triples?: Array<{ subject: string; predicate: string; object: string }>;
 }
 
@@ -50,6 +52,7 @@ export interface KbFtsRow {
   client_code: string;
   organization_name: string;
   content: string;
+  modified_iso: string | null;
   fts_score: number;
 }
 
@@ -82,7 +85,29 @@ export interface KbArchiveIngestItem {
 }
 
 const RRF_K = 60;
-const DECAY_LAMBDA = 0.015; // ~46-day half-life for episodic decay
+const DEFAULT_HALF_LIFE_DAYS = 30;
+
+export function parseIsoToMs(iso?: string | null): number | null {
+  if (!iso || typeof iso !== "string") return null;
+  const trimmed = iso.trim();
+  if (!trimmed) return null;
+  const normalized =
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(trimmed)
+      ? `${trimmed}Z`
+      : trimmed;
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatDateTag(updatedAtMs: number, modifiedIso?: string | null): string {
+  if (modifiedIso && /^\d{4}-\d{2}-\d{2}/.test(modifiedIso.trim())) {
+    return modifiedIso.trim().slice(0, 10);
+  }
+  if (Number.isFinite(updatedAtMs) && updatedAtMs > 0) {
+    return new Date(updatedAtMs).toISOString().slice(0, 10);
+  }
+  return "";
+}
 
 const FTS_STOPWORDS = new Set([
   "and",
@@ -142,24 +167,40 @@ export async function queryKbArchive(
     (env.KB_EMBEDDING_MODEL as "@cf/baai/bge-base-en-v1.5") ||
     "@cf/baai/bge-base-en-v1.5";
 
-  // 1. Run 768-dim KB embedding + D1 FTS5 BM25 query in parallel
+  // 1. Run 768-dim KB embedding + D1 FTS5 BM25 query (CTE + indexed files LEFT JOIN for modified_iso) in parallel
   const d1FtsPromise: Promise<{ results: KbFtsRow[] }> =
     ftsQuery !== '""' && env.KB_DB
       ? env.KB_DB.prepare(
-          `SELECT
-             source_type,
-             ref_id,
-             rel_path,
-             title,
-             primary_theme,
-             client_code,
-             organization_name,
-             substr(content, 1, 1600) AS content,
-             (-1.0 * bm25(kb_fts, 1.0, 0.0, 4.0, 10.0, 3.0, 2.0, 3.0, 3.0, 2.0, 1.0)) AS fts_score
-           FROM kb_fts
-           WHERE kb_fts MATCH ?1
-           ORDER BY rank
-           LIMIT ?2`
+          `WITH fts_hits AS (
+             SELECT
+               source_type,
+               ref_id,
+               rel_path,
+               title,
+               primary_theme,
+               client_code,
+               organization_name,
+               substr(content, 1, 1600) AS content,
+               (-1.0 * bm25(kb_fts, 1.0, 0.0, 4.0, 10.0, 3.0, 2.0, 3.0, 3.0, 2.0, 1.0)) AS fts_score
+             FROM kb_fts
+             WHERE kb_fts MATCH ?1
+             ORDER BY rank
+             LIMIT ?2
+           )
+           SELECT
+             h.source_type,
+             h.ref_id,
+             h.rel_path,
+             h.title,
+             h.primary_theme,
+             h.client_code,
+             h.organization_name,
+             h.content,
+             f.modified_iso AS modified_iso,
+             h.fts_score
+           FROM fts_hits h
+           LEFT JOIN files f ON f.rel_path = h.rel_path
+           ORDER BY h.fts_score DESC`
         )
           .bind(ftsQuery, topK)
           .all<KbFtsRow>()
@@ -198,6 +239,7 @@ export async function queryKbArchive(
     const orgLabel = row.organization_name || row.client_code
       ? ` (${row.organization_name || row.client_code})`
       : "";
+    const parsedModifiedMs = parseIsoToMs(row.modified_iso);
     return {
       id: canonicalKey,
       source: "kb_fts" as const,
@@ -209,7 +251,9 @@ export async function queryKbArchive(
       namespace: row.client_code || "kb-archive",
       rawScore: Number(row.fts_score ?? 1.0),
       importance: 0.85,
-      updatedAtMs: nowMs
+      confidence: 1.0,
+      updatedAtMs: parsedModifiedMs ?? nowMs,
+      modifiedIso: row.modified_iso ?? null
     };
   });
 
@@ -234,15 +278,16 @@ export async function queryKbArchive(
     try {
       const hydrated = await env.KB_DB.prepare(
         `SELECT
-           rel_path,
-           title,
-           primary_theme,
-           client_code,
-           organization_name,
-           substr(content, 1, 1600) AS content,
-           NULL AS modified_iso
-         FROM kb_fts
-         WHERE rel_path IN (${placeholders})`
+           k.rel_path,
+           k.title,
+           k.primary_theme,
+           k.client_code,
+           k.organization_name,
+           substr(k.content, 1, 1600) AS content,
+           f.modified_iso AS modified_iso
+         FROM kb_fts k
+         LEFT JOIN files f ON f.rel_path = k.rel_path
+         WHERE k.rel_path IN (${placeholders})`
       )
         .bind(...relPaths)
         .all<KbHydrationRow>();
@@ -278,6 +323,8 @@ export async function queryKbArchive(
       d1Row?.content ||
       `Document: ${titleBase}\nPath: ${canonicalKey}\nTheme: ${primaryTheme || "General"}`;
 
+    const parsedModifiedMs = parseIsoToMs(d1Row?.modified_iso);
+
     return {
       id: canonicalKey,
       source: "kb_vec" as const,
@@ -289,7 +336,9 @@ export async function queryKbArchive(
       namespace: clientCode || "kb-archive",
       rawScore: match.score,
       importance: 0.85,
-      updatedAtMs: nowMs
+      confidence: 1.0,
+      updatedAtMs: parsedModifiedMs ?? nowMs,
+      modifiedIso: d1Row?.modified_iso ?? null
     };
   });
 
@@ -331,6 +380,7 @@ export async function fuseBrainAndKb(params: {
   activeDecisions?: string[];
   extraTriples?: Array<{ subject: string; predicate: string; object: string }>;
   tokenBudget: number;
+  halfLifeDays?: number;
   weights?: {
     brain_fts: number;
     brain_vec: number;
@@ -392,7 +442,14 @@ export async function fuseBrainAndKb(params: {
   ingestList(params.kbFts, weights.kb_fts, "kb_fts");
   ingestList(params.kbVec, weights.kb_vec, "kb_vec");
 
-  // Apply Importance Boost & Temporal Decay (curated KB docs have decay = 1.0)
+  // Apply Importance Boost, Bounded Epistemic Confidence & Configurable Half-Life Decay
+  // (curated KB archive docs have decay = 1.0 so historical documents remain discoverable)
+  const effectiveHalfLifeDays = Math.max(
+    1,
+    Math.min(365, params.halfLifeDays ?? DEFAULT_HALF_LIFE_DAYS)
+  );
+  const decayLambda = Math.LN2 / effectiveHalfLifeDays;
+
   const finalRanked: Array<
     RankedCandidate & {
       rrfScore: number;
@@ -402,12 +459,15 @@ export async function fuseBrainAndKb(params: {
   > = Array.from(merged.values()).map((doc) => {
     const ageDays = Math.max(0, (nowMs - doc.updatedAtMs) / 86_400_000);
     const decayFactor =
-      doc.origin === "kb.tsimon.me" ? 1.0 : Math.exp(-DECAY_LAMBDA * ageDays);
-    const importanceBoost = 1.0 + 0.25 * (doc.importance ?? 0.5);
+      doc.origin === "kb.tsimon.me" ? 1.0 : Math.exp(-decayLambda * ageDays);
+    const importanceClamped = Math.max(0, Math.min(1, doc.importance ?? 0.5));
+    const importanceBoost = 1.0 + 0.25 * importanceClamped;
+    const confidenceClamped = Math.max(0, Math.min(1, doc.confidence ?? 1.0));
+    const confidenceBoost = 0.75 + 0.25 * confidenceClamped;
 
     return {
       ...doc,
-      rrfScore: doc.rrfScore * importanceBoost * decayFactor
+      rrfScore: doc.rrfScore * importanceBoost * confidenceBoost * decayFactor
     };
   });
 
@@ -528,8 +588,10 @@ export async function fuseBrainAndKb(params: {
   let brainCount = 0;
   let kbCount = 0;
 
-  // Guarantee the top reranked Brain & KB leaders + true #1 rank from each of the 4 signal lists
-  // are placed at the front of the packing queue before remaining sorted candidates
+  // When Stage-2 Cross-Encoder reranking succeeded, trust the reranker and only guarantee
+  // the #1 post-rerank Brain & KB winners so neither federated pool starves the other without
+  // letting noisy raw pre-rerank #1 channel hits override the neural reranker.
+  // When reranking is unavailable, fall back to guaranteeing #1 from each of the 4 signal channels.
   const findById = (prefix: "brain" | "kb", rawId?: string) =>
     rawId ? finalRanked.find((d) => d.id === `${prefix}:${rawId}`) : undefined;
 
@@ -538,14 +600,18 @@ export async function fuseBrainAndKb(params: {
   );
   const topRerankedKb = finalRanked.find((d) => d.origin === "kb.tsimon.me");
 
-  const topSignalLeaders = [
-    topRerankedBrain,
-    topRerankedKb,
-    findById("brain", params.brainFts[0]?.id),
-    findById("brain", params.brainVec[0]?.id),
-    findById("kb", params.kbFts[0]?.id),
-    findById("kb", params.kbVec[0]?.id)
-  ].filter((d): d is NonNullable<typeof d> => Boolean(d));
+  const topSignalLeaders = (
+    reranked
+      ? [topRerankedBrain, topRerankedKb]
+      : [
+          topRerankedBrain,
+          topRerankedKb,
+          findById("brain", params.brainFts[0]?.id),
+          findById("brain", params.brainVec[0]?.id),
+          findById("kb", params.kbFts[0]?.id),
+          findById("kb", params.kbVec[0]?.id)
+        ]
+  ).filter((d): d is NonNullable<typeof d> => Boolean(d));
 
   const orderedQueue: Array<
     RankedCandidate & {
@@ -586,7 +652,9 @@ export async function fuseBrainAndKb(params: {
       typeof doc.rerankScore === "number"
         ? ` | Rerank: ${doc.rerankScore.toFixed(3)}`
         : "";
-    const entry = `#### ${badge} ${doc.title} (RRF: ${doc.rrfScore.toFixed(4)}${rerankTag} | via: ${doc.sources.join("+")} | uri: ${doc.uri})\n${fullBody}`;
+    const dateVal = formatDateTag(doc.updatedAtMs, doc.modifiedIso);
+    const dateTag = dateVal ? ` | date: ${dateVal}` : "";
+    const entry = `#### ${badge} ${doc.title} (RRF: ${doc.rrfScore.toFixed(4)}${rerankTag}${dateTag} | via: ${doc.sources.join("+")} | uri: ${doc.uri})\n${fullBody}`;
     const entryTokens = estimateTokens(entry);
 
     if (usedTokens + entryTokens <= params.tokenBudget) {
@@ -603,7 +671,7 @@ export async function fuseBrainAndKb(params: {
 
     // Try condensed fallback if full text exceeds remaining budget
     const condensedBody = (doc.summary || doc.content).slice(0, 220);
-    const condensedEntry = `- **${badge} ${doc.title}** (${doc.uri}, RRF: ${doc.rrfScore.toFixed(4)}${rerankTag}): ${condensedBody}`;
+    const condensedEntry = `- **${badge} ${doc.title}** (${doc.uri}, RRF: ${doc.rrfScore.toFixed(4)}${rerankTag}${dateTag}): ${condensedBody}`;
     const condensedTokens = estimateTokens(condensedEntry);
     if (usedTokens + condensedTokens <= params.tokenBudget) {
       chunkLines.push(condensedEntry);

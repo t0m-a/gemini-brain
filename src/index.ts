@@ -16,13 +16,25 @@ import {
   type KbArchiveIngestItem
 } from "./federation";
 import { renderDashboardHtml } from "./dashboard";
+import { BRAIN_VERSION } from "./version";
+import {
+  createSignedToken,
+  extractBasicAuthCredentials,
+  isAllowedRedirectUri,
+  normalizeBearerToken,
+  timingSafeStringEqual,
+  verifyCloudflareOidcJwt,
+  verifyCloudflareOidcToken,
+  verifyPkceChallenge,
+  verifySignedToken
+} from "./auth";
 
 export { BrainMemoryDO, KbFederationService };
 
 function createBrainMcpServer(env: Env) {
   const server = new McpServer({
     name: "gemini-brain-mcp",
-    version: "1.4.0"
+    version: BRAIN_VERSION
   });
 
   // Always route to the singleton Durable Object instance
@@ -218,6 +230,12 @@ function createBrainMcpServer(env: Env) {
           .max(1)
           .optional()
           .describe("Salience weight from 0.0 to 1.0"),
+        confidence: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe("Epistemic certainty from 0.0 to 1.0 (default: 1.0)"),
         createdAt: z
           .number()
           .int()
@@ -475,193 +493,6 @@ function createBrainMcpServer(env: Env) {
   return server;
 }
 
-function normalizeBearerToken(raw: string | null | undefined): string {
-  if (!raw) return "";
-  return raw
-    .trim()
-    .replace(/^MCP_BEARER_TOKEN\s*=\s*/i, "")
-    .replace(/^Bearer\s+/i, "")
-    .replace(/^["']+|["']+$/g, "")
-    .trim();
-}
-
-function toBase64Url(str: string): string {
-  return btoa(unescape(encodeURIComponent(str)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-function fromBase64Url(b64url: string): string {
-  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
-  return decodeURIComponent(escape(atob(b64 + pad)));
-}
-
-function base64UrlToUint8Array(b64url: string): Uint8Array {
-  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
-  const raw = atob(b64 + pad);
-  const out = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) {
-    out[i] = raw.charCodeAt(i);
-  }
-  return out;
-}
-
-function uint8ArrayToBase64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-async function hmacSign(payloadB64: string, secret: string): Promise<string> {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const sigBuf = await crypto.subtle.sign("HMAC", key, enc.encode(payloadB64));
-  return uint8ArrayToBase64Url(new Uint8Array(sigBuf));
-}
-
-async function createSignedToken(
-  prefix: string,
-  payload: Record<string, unknown>,
-  secret: string
-): Promise<string> {
-  const payloadB64 = toBase64Url(JSON.stringify(payload));
-  const sig = await hmacSign(payloadB64, secret);
-  return `${prefix}.${payloadB64}.${sig}`;
-}
-
-async function verifySignedToken<T extends { exp?: number }>(
-  token: string,
-  expectedPrefix: string,
-  secret: string
-): Promise<T | null> {
-  if (!token || !secret || !token.startsWith(`${expectedPrefix}.`)) return null;
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  const [, payloadB64, sig] = parts;
-  const expectedSig = await hmacSign(payloadB64, secret);
-  if (sig !== expectedSig) return null;
-  try {
-    const decoded = JSON.parse(fromBase64Url(payloadB64)) as T;
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (decoded.exp && decoded.exp < nowSec) return null;
-    return decoded;
-  } catch {
-    return null;
-  }
-}
-
-async function verifyCloudflareOidcJwt(
-  token: string,
-  cfOidcBase: string,
-  expectedClientId: string
-): Promise<boolean> {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return false;
-    const header = JSON.parse(fromBase64Url(parts[0])) as { kid?: string; alg?: string };
-    const payload = JSON.parse(fromBase64Url(parts[1])) as {
-      iss?: string;
-      aud?: string | string[];
-      exp?: number;
-      client_id?: string;
-    };
-
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (payload.exp && payload.exp < nowSec) return false;
-    if (payload.iss && payload.iss !== cfOidcBase) return false;
-
-    const audMatch =
-      !payload.aud ||
-      (Array.isArray(payload.aud)
-        ? payload.aud.includes(expectedClientId)
-        : payload.aud === expectedClientId) ||
-      payload.client_id === expectedClientId;
-    if (!audMatch) return false;
-
-    const jwksRes = await fetch(`${cfOidcBase}/jwks`);
-    if (!jwksRes.ok) return false;
-    const jwks = (await jwksRes.json()) as {
-      keys?: Array<JsonWebKey & { kid?: string; alg?: string }>;
-    };
-    const keys = jwks.keys || [];
-    const matchingKey = header.kid
-      ? keys.find((k) => k.kid === header.kid)
-      : keys[0];
-    if (!matchingKey) return false;
-
-    const cryptoKey = await crypto.subtle.importKey(
-      "jwk",
-      matchingKey,
-      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-      false,
-      ["verify"]
-    );
-    const data = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
-    const signature = base64UrlToUint8Array(parts[2]);
-    return await crypto.subtle.verify("RSASSA-PKCS1-v1_5", cryptoKey, signature, data);
-  } catch {
-    return false;
-  }
-}
-
-async function verifyCloudflareOidcToken(
-  token: string,
-  cfOidcBase: string,
-  expectedClientId: string
-): Promise<boolean> {
-  if (!token) return false;
-
-  const encoder = new TextEncoder();
-  const hashBuf = await crypto.subtle.digest("SHA-256", encoder.encode(token));
-  const tokenHash = Array.from(new Uint8Array(hashBuf))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-  const cacheKey = new Request(`https://auth-cache.internal/cf-oidc/${tokenHash}`);
-  const cache = caches.default;
-
-  const cached = await cache.match(cacheKey);
-  if (cached) return true;
-
-  // 1. Try local cryptographic RS256 verification against Cloudflare Access JWKS
-  const jwtValid = await verifyCloudflareOidcJwt(token, cfOidcBase, expectedClientId);
-  if (jwtValid) {
-    await cache.put(
-      cacheKey,
-      new Response("ok", { headers: { "Cache-Control": "max-age=300" } })
-    );
-    return true;
-  }
-
-  // 2. Fallback: Verify via Cloudflare OIDC userinfo endpoint
-  try {
-    const res = await fetch(`${cfOidcBase}/userinfo`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    if (res.ok) {
-      await cache.put(
-        cacheKey,
-        new Response("ok", { headers: { "Cache-Control": "max-age=300" } })
-      );
-      return true;
-    }
-  } catch {
-    // Ignore network errors and fail closed
-  }
-
-  return false;
-}
-
 const BRAIN_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#0b1120"/><circle cx="32" cy="32" r="18" fill="none" stroke="#06b6d4" stroke-width="4"/><circle cx="32" cy="32" r="7" fill="#10b981"/></svg>`;
 
 export default {
@@ -753,7 +584,7 @@ export default {
             "client_secret_basic",
             "none"
           ],
-          code_challenge_methods_supported: ["S256", "plain"],
+          code_challenge_methods_supported: ["S256"],
           id_token_signing_alg_values_supported: ["RS256"],
           subject_types_supported: ["public"]
         },
@@ -778,11 +609,31 @@ export default {
       (url.pathname === "/register" || url.pathname === "/mcp/register")
     ) {
       const regBody = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const requestedRedirects = Array.isArray(regBody.redirect_uris)
+        ? regBody.redirect_uris.filter((u): u is string => typeof u === "string")
+        : [`${brainOrigin}/callback`];
+
+      const invalidRedirects = requestedRedirects.filter(
+        (uri) => !isAllowedRedirectUri(uri, brainOrigin, env.OAUTH_ALLOWED_REDIRECT_ORIGINS)
+      );
+      if (invalidRedirects.length > 0 || requestedRedirects.length === 0) {
+        return Response.json(
+          {
+            error: "invalid_redirect_uri",
+            error_description: "One or more redirect_uris are not permitted by this server."
+          },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+
       return Response.json(
         {
           client_id: oauthClientId,
-          client_name: regBody.client_name || "mcp-oauth-client",
-          redirect_uris: regBody.redirect_uris || [`${brainOrigin}/callback`],
+          client_name:
+            typeof regBody.client_name === "string" && regBody.client_name.trim()
+              ? regBody.client_name.trim().slice(0, 128)
+              : "mcp-oauth-client",
+          redirect_uris: requestedRedirects,
           grant_types: ["authorization_code", "refresh_token"],
           response_types: ["code"],
           token_endpoint_auth_method: "client_secret_post"
@@ -792,26 +643,62 @@ export default {
     }
 
     const expectedToken = normalizeBearerToken(env.MCP_BEARER_TOKEN);
-    const signingSecret = expectedToken || oauthClientId;
+    const signingSecret = expectedToken;
 
     if (
       request.method === "GET" &&
       (url.pathname === "/authorize" || url.pathname === "/mcp/authorize")
     ) {
-      const origRedirectUri = url.searchParams.get("redirect_uri") || "";
+      if (!signingSecret) {
+        return Response.json(
+          {
+            error: "server_error",
+            error_description: "Server authentication signing secret is not configured."
+          },
+          { status: 503, headers: corsHeaders }
+        );
+      }
+
+      const requestedClientId = url.searchParams.get("client_id") || "";
+      if (requestedClientId && requestedClientId !== oauthClientId) {
+        return Response.json(
+          { error: "invalid_client", error_description: "Unknown OAuth client_id." },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+
+      const callbackUri = `${brainOrigin}/callback`;
+      const origRedirectUri = url.searchParams.get("redirect_uri") || callbackUri;
+      if (!isAllowedRedirectUri(origRedirectUri, brainOrigin, env.OAUTH_ALLOWED_REDIRECT_ORIGINS)) {
+        return Response.json(
+          { error: "invalid_request", error_description: "Disallowed redirect_uri." },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+
       const origState = url.searchParams.get("state") || "";
       const codeChallenge = url.searchParams.get("code_challenge") || "";
-      const codeChallengeMethod = url.searchParams.get("code_challenge_method") || "S256";
-      const callbackUri = `${brainOrigin}/callback`;
-      const nowSec = Math.floor(Date.now() / 1000);
+      const codeChallengeMethod = (
+        url.searchParams.get("code_challenge_method") || "S256"
+      ).toUpperCase();
+      if (codeChallenge && codeChallengeMethod !== "S256" && codeChallengeMethod !== "PLAIN") {
+        return Response.json(
+          {
+            error: "invalid_request",
+            error_description: "Unsupported code_challenge_method."
+          },
+          { status: 400, headers: corsHeaders }
+        );
+      }
 
+      const nowSec = Math.floor(Date.now() / 1000);
       const signedState = await createSignedToken(
         "bstate",
         {
-          r: origRedirectUri || callbackUri,
+          r: origRedirectUri,
           s: origState,
           cc: codeChallenge,
-          ccm: codeChallengeMethod,
+          ccm: codeChallenge ? codeChallengeMethod : "",
           exp: nowSec + 900
         },
         signingSecret
@@ -831,6 +718,16 @@ export default {
       request.method === "GET" &&
       (url.pathname === "/callback" || url.pathname === "/mcp/callback")
     ) {
+      if (!signingSecret) {
+        return Response.json(
+          {
+            error: "server_error",
+            error_description: "Server authentication signing secret is not configured."
+          },
+          { status: 503, headers: corsHeaders }
+        );
+      }
+
       const rawState = url.searchParams.get("state") || "";
       const cfCode = url.searchParams.get("code") || "";
       const cfError = url.searchParams.get("error") || "";
@@ -844,104 +741,263 @@ export default {
         exp?: number;
       }>(rawState, "bstate", signingSecret);
 
-      if (decoded?.r) {
-        const clientCallback = new URL(decoded.r);
-        if (cfError || !cfCode) {
-          clientCallback.searchParams.set("error", cfError || "access_denied");
-          const errDesc = url.searchParams.get("error_description");
-          if (errDesc) clientCallback.searchParams.set("error_description", errDesc);
-        } else {
-          // Mint HMAC-signed authorization code proving Cloudflare Zero Trust authentication succeeded
-          const signedCode = await createSignedToken(
-            "bcode",
-            {
-              cf: cfCode,
-              cc: decoded.cc || "",
-              ccm: decoded.ccm || "S256",
-              exp: nowSec + 600
-            },
-            signingSecret
-          );
-          clientCallback.searchParams.set("code", signedCode);
-        }
-        if (decoded.s) {
-          clientCallback.searchParams.set("state", decoded.s);
-        }
-        return Response.redirect(clientCallback.toString(), 302);
+      if (!decoded?.r) {
+        return Response.json(
+          {
+            error: "invalid_request",
+            error_description: "Invalid or expired OAuth state."
+          },
+          { status: 400, headers: corsHeaders }
+        );
       }
 
-      return Response.json(
-        {
-          ok: Boolean(cfCode && !cfError),
-          error: cfError || undefined,
-          error_description: url.searchParams.get("error_description") || undefined
-        },
-        { status: cfError ? 400 : 200, headers: corsHeaders }
-      );
+      if (!isAllowedRedirectUri(decoded.r, brainOrigin, env.OAUTH_ALLOWED_REDIRECT_ORIGINS)) {
+        return Response.json(
+          { error: "invalid_request", error_description: "Disallowed redirect_uri in state." },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+
+      const clientCallback = new URL(decoded.r);
+      if (cfError || !cfCode) {
+        clientCallback.searchParams.set("error", cfError || "access_denied");
+        const errDesc = url.searchParams.get("error_description");
+        if (errDesc) clientCallback.searchParams.set("error_description", errDesc);
+      } else {
+        // Wrap the upstream Cloudflare Access code into a short-lived signed envelope bound to
+        // redirect_uri and PKCE challenge; POST /token redeems decodedCode.cf upstream with
+        // Cloudflare Zero Trust before minting any Brain bearer token.
+        const signedCode = await createSignedToken(
+          "bcode",
+          {
+            cf: cfCode,
+            r: decoded.r,
+            cc: decoded.cc || "",
+            ccm: decoded.ccm || "S256",
+            exp: nowSec + 300
+          },
+          signingSecret
+        );
+        clientCallback.searchParams.set("code", signedCode);
+      }
+      if (decoded.s) {
+        clientCallback.searchParams.set("state", decoded.s);
+      }
+      return Response.redirect(clientCallback.toString(), 302);
     }
 
     if (
       request.method === "POST" &&
       (url.pathname === "/token" || url.pathname === "/mcp/token")
     ) {
+      if (!signingSecret) {
+        return Response.json(
+          {
+            error: "server_error",
+            error_description: "Server authentication signing secret is not configured."
+          },
+          { status: 503, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+        );
+      }
+
       const contentType = request.headers.get("Content-Type") || "";
       const rawBody = await request.text();
-      const params = new URLSearchParams(
-        contentType.includes("application/json")
-          ? (JSON.parse(rawBody || "{}") as Record<string, string>)
-          : rawBody
-      );
+      let params: URLSearchParams;
+      try {
+        if (contentType.includes("application/json")) {
+          const parsedObj = JSON.parse(rawBody || "{}") as Record<string, unknown>;
+          params = new URLSearchParams();
+          for (const [k, v] of Object.entries(parsedObj)) {
+            if (typeof v === "string" || typeof v === "number") {
+              params.set(k, String(v));
+            }
+          }
+        } else {
+          params = new URLSearchParams(rawBody);
+        }
+      } catch {
+        return Response.json(
+          { error: "invalid_request", error_description: "Malformed token request body." },
+          { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+        );
+      }
 
       const grantType = params.get("grant_type") || "authorization_code";
       const codeParam = params.get("code") || "";
       const refreshParam = params.get("refresh_token") || "";
       const codeVerifier = params.get("code_verifier") || "";
+      const reqRedirectUri = params.get("redirect_uri") || "";
+      const basicCreds = extractBasicAuthCredentials(request.headers.get("Authorization"));
+      const providedClientId = basicCreds?.clientId || params.get("client_id") || "";
+      const providedClientSecret =
+        basicCreds?.clientSecret ||
+        params.get("client_secret") ||
+        env.OAUTH_CLIENT_SECRET ||
+        "";
       const nowSec = Math.floor(Date.now() / 1000);
 
-      // 1. Exchange HMAC-signed authorization code ('bcode.*') minted after Cloudflare Zero Trust login
+      // 1. Exchange signed authorization code ('bcode.*') by redeeming the wrapped Cloudflare Access
+      //    code upstream at Cloudflare Zero Trust OIDC before minting Brain tokens.
       if (grantType === "authorization_code" && codeParam.startsWith("bcode.")) {
+        if (providedClientId && providedClientId !== oauthClientId) {
+          return Response.json(
+            { error: "invalid_client", error_description: "Invalid OAuth client_id." },
+            { status: 401, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+          );
+        }
+
         const decodedCode = await verifySignedToken<{
           cf: string;
+          r?: string;
           cc?: string;
           ccm?: string;
           exp?: number;
         }>(codeParam, "bcode", signingSecret);
 
-        if (!decodedCode) {
+        if (!decodedCode || !decodedCode.cf) {
           return Response.json(
-            { error: "invalid_grant", error_description: "Invalid or expired authorization code" },
+            { error: "invalid_grant", error_description: "Invalid or expired authorization code." },
             { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
           );
         }
 
-        // Verify PKCE code_verifier if a code_challenge was provided during /authorize and verifier is present
-        if (decodedCode.cc && codeVerifier) {
-          if (decodedCode.ccm === "S256") {
-            const hashBuf = await crypto.subtle.digest(
-              "SHA-256",
-              new TextEncoder().encode(codeVerifier)
-            );
-            const computedChallenge = uint8ArrayToBase64Url(new Uint8Array(hashBuf));
-            if (computedChallenge !== decodedCode.cc) {
-              return Response.json(
-                { error: "invalid_grant", error_description: "PKCE code_verifier mismatch" },
-                { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
-              );
-            }
-          } else if (codeVerifier !== decodedCode.cc) {
-            return Response.json(
-              { error: "invalid_grant", error_description: "PKCE code_verifier mismatch" },
-              { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
-            );
+        if (reqRedirectUri && decodedCode.r && reqRedirectUri !== decodedCode.r) {
+          return Response.json(
+            { error: "invalid_grant", error_description: "redirect_uri mismatch." },
+            { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+          );
+        }
+
+        // Mandatory RFC 7636 PKCE verification whenever code_challenge was supplied at /authorize
+        if (!(await verifyPkceChallenge(codeVerifier, decodedCode.cc, decodedCode.ccm))) {
+          return Response.json(
+            { error: "invalid_grant", error_description: "PKCE code_verifier missing or mismatch." },
+            { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+          );
+        }
+
+        // Redeem upstream Cloudflare Access authorization code (single-use & client-authenticated)
+        const cfTokenParams = new URLSearchParams();
+        cfTokenParams.set("grant_type", "authorization_code");
+        cfTokenParams.set("code", decodedCode.cf);
+        cfTokenParams.set("redirect_uri", `${brainOrigin}/callback`);
+        cfTokenParams.set("client_id", oauthClientId);
+        if (providedClientSecret) {
+          cfTokenParams.set("client_secret", providedClientSecret);
+        }
+
+        let cfTokenRes: Response;
+        try {
+          cfTokenRes = await fetch(`${cfOidcBase}/token`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              Accept: "application/json"
+            },
+            body: cfTokenParams.toString(),
+            redirect: "manual"
+          });
+        } catch {
+          return Response.json(
+            {
+              error: "invalid_grant",
+              error_description: "Upstream Cloudflare Zero Trust token exchange unavailable."
+            },
+            { status: 502, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+          );
+        }
+
+        if (!cfTokenRes.ok) {
+          return Response.json(
+            {
+              error: "invalid_grant",
+              error_description: "Upstream Cloudflare Zero Trust code verification failed."
+            },
+            { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+          );
+        }
+
+        const cfTokenPayload = (await cfTokenRes.json().catch(() => null)) as {
+          access_token?: string;
+          id_token?: string;
+        } | null;
+
+        if (!cfTokenPayload || (!cfTokenPayload.id_token && !cfTokenPayload.access_token)) {
+          return Response.json(
+            {
+              error: "invalid_grant",
+              error_description: "Upstream Cloudflare Zero Trust response missing OIDC tokens."
+            },
+            { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+          );
+        }
+
+        let verifiedSub = "thomas-simon-primary-brain";
+        let verifiedEmail: string | undefined;
+        let upstreamIdentityValid = false;
+
+        // Verify returned id_token or access_token cryptographically against Cloudflare JWKS
+        for (const candidateJwt of [cfTokenPayload.id_token, cfTokenPayload.access_token]) {
+          if (!candidateJwt) continue;
+          const jwtResult = await verifyCloudflareOidcJwt(
+            candidateJwt,
+            cfOidcBase,
+            oauthClientId
+          );
+          if (jwtResult.valid) {
+            upstreamIdentityValid = true;
+            if (jwtResult.sub) verifiedSub = jwtResult.sub;
+            if (jwtResult.email) verifiedEmail = jwtResult.email;
+            break;
           }
+        }
+
+        // Fallback to upstream /userinfo if Cloudflare returned an opaque access_token
+        if (!upstreamIdentityValid && cfTokenPayload.access_token) {
+          try {
+            const uiRes = await fetch(`${cfOidcBase}/userinfo`, {
+              headers: {
+                Authorization: `Bearer ${cfTokenPayload.access_token}`,
+                Accept: "application/json"
+              }
+            });
+            if (uiRes.ok) {
+              const uiJson = (await uiRes.json().catch(() => ({}))) as {
+                sub?: string;
+                email?: string;
+              };
+              upstreamIdentityValid = true;
+              if (uiJson.sub) verifiedSub = uiJson.sub;
+              if (uiJson.email) verifiedEmail = uiJson.email;
+            }
+          } catch {
+            // Fail closed below
+          }
+        }
+
+        if (!upstreamIdentityValid) {
+          return Response.json(
+            {
+              error: "invalid_grant",
+              error_description: "Upstream Cloudflare Zero Trust identity verification failed."
+            },
+            { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+          );
+        }
+
+        const tokenClaims: Record<string, unknown> = {
+          sub: verifiedSub,
+          client_id: oauthClientId,
+          iat: nowSec
+        };
+        if (verifiedEmail) {
+          tokenClaims.email = verifiedEmail;
         }
 
         const accessToken = await createSignedToken(
           "bat",
           {
-            sub: "thomas-simon-primary-brain",
-            client_id: oauthClientId,
-            iat: nowSec,
+            ...tokenClaims,
             exp: nowSec + 2592000 // 30 days
           },
           signingSecret
@@ -949,9 +1005,7 @@ export default {
         const refreshToken = await createSignedToken(
           "brt",
           {
-            sub: "thomas-simon-primary-brain",
-            client_id: oauthClientId,
-            iat: nowSec,
+            ...tokenClaims,
             exp: nowSec + 31536000 // 365 days
           },
           signingSecret
@@ -971,25 +1025,40 @@ export default {
 
       // 2. Refresh token rotation ('brt.*')
       if (grantType === "refresh_token" && refreshParam.startsWith("brt.")) {
+        if (providedClientId && providedClientId !== oauthClientId) {
+          return Response.json(
+            { error: "invalid_client", error_description: "Invalid OAuth client_id." },
+            { status: 401, headers: { "Cache-Control": "no-store", ...corsHeaders } }
+          );
+        }
+
         const decodedRefresh = await verifySignedToken<{
           sub: string;
+          email?: string;
           client_id: string;
           exp?: number;
         }>(refreshParam, "brt", signingSecret);
 
-        if (!decodedRefresh) {
+        if (!decodedRefresh || decodedRefresh.client_id !== oauthClientId) {
           return Response.json(
-            { error: "invalid_grant", error_description: "Invalid or expired refresh token" },
+            { error: "invalid_grant", error_description: "Invalid or expired refresh token." },
             { status: 400, headers: { "Cache-Control": "no-store", ...corsHeaders } }
           );
+        }
+
+        const refreshedClaims: Record<string, unknown> = {
+          sub: decodedRefresh.sub,
+          client_id: oauthClientId,
+          iat: nowSec
+        };
+        if (decodedRefresh.email) {
+          refreshedClaims.email = decodedRefresh.email;
         }
 
         const accessToken = await createSignedToken(
           "bat",
           {
-            sub: decodedRefresh.sub,
-            client_id: oauthClientId,
-            iat: nowSec,
+            ...refreshedClaims,
             exp: nowSec + 2592000
           },
           signingSecret
@@ -997,9 +1066,7 @@ export default {
         const newRefreshToken = await createSignedToken(
           "brt",
           {
-            sub: decodedRefresh.sub,
-            client_id: oauthClientId,
-            iat: nowSec,
+            ...refreshedClaims,
             exp: nowSec + 31536000
           },
           signingSecret
@@ -1063,13 +1130,24 @@ export default {
 
     if (url.pathname === "/userinfo" || url.pathname === "/mcp/userinfo") {
       const provided = normalizeBearerToken(request.headers.get("Authorization"));
-      const signedTokenValid = await verifySignedToken(provided, "bat", signingSecret);
-      if (signedTokenValid || (expectedToken && provided === expectedToken)) {
+      const signedToken =
+        signingSecret && provided
+          ? await verifySignedToken<{ sub?: string; email?: string; exp?: number }>(
+              provided,
+              "bat",
+              signingSecret
+            )
+          : null;
+      const isPsk =
+        Boolean(expectedToken) &&
+        Boolean(provided) &&
+        (await timingSafeStringEqual(provided, expectedToken));
+      if (signedToken || isPsk) {
         return Response.json(
           {
-            sub: "thomas-simon-primary-brain",
+            sub: signedToken?.sub || "thomas-simon-primary-brain",
             name: "Thomas Mathieu Simon",
-            email: "thomas@tsimon.me",
+            email: signedToken?.email || "thomas@tsimon.me",
             email_verified: true
           },
           { status: 200, headers: corsHeaders }
@@ -1098,7 +1176,7 @@ export default {
       return Response.json(
         {
           name: "gemini-brain-mcp",
-          version: "1.5.0",
+          version: BRAIN_VERSION,
           endpoint: `${brainOrigin}/mcp`,
           dashboard: `${brainOrigin}/mcp?ui=1`,
           oauth_metadata: `${brainOrigin}/.well-known/oauth-authorization-server`,
@@ -1138,14 +1216,17 @@ export default {
             url.searchParams.has("reset"))));
 
     if (isBrowserHtmlGet) {
-      return new Response(renderDashboardHtml(env.PRIMARY_DOMAIN || "tsimon.me"), {
-        status: 200,
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "no-store, no-cache, must-revalidate",
-          ...corsHeaders
+      return new Response(
+        renderDashboardHtml(env.PRIMARY_DOMAIN || "tsimon.me", BRAIN_VERSION),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            ...corsHeaders
+          }
         }
-      });
+      );
     }
 
     const getBrainStub = () => {
@@ -1164,6 +1245,16 @@ export default {
         url.pathname === "/dashboard" ||
         url.pathname === "/ui")
     ) {
+      if (!expectedToken) {
+        return Response.json(
+          {
+            ok: false,
+            authError: "Server authentication is not configured (MCP_BEARER_TOKEN missing)."
+          },
+          { status: 503, headers: corsHeaders }
+        );
+      }
+
       const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
       const action = String(nocActionHeader || body.nocAction || url.searchParams.get("noc") || "dashboard");
       const providedToken = normalizeBearerToken(
@@ -1172,7 +1263,7 @@ export default {
           (typeof body._token === "string" ? body._token : "")
       );
 
-      if (expectedToken && providedToken !== expectedToken) {
+      if (!providedToken || !(await timingSafeStringEqual(providedToken, expectedToken))) {
         return Response.json(
           {
             ok: false,
@@ -1268,38 +1359,46 @@ export default {
       }
     }
 
-    // 4. Dual-Mode Auth Gate: Fast-Path PSK (gemini-cli / Antigravity) + Signed Brain OAuth + Cloudflare OIDC
-    if (expectedToken) {
-      const provided = normalizeBearerToken(
-        request.headers.get("Authorization") || request.headers.get("X-Brain-Token")
+    // 4. Dual-Mode Auth Gate (Fail-Closed): Fast-Path PSK (gemini-cli / Antigravity) + Signed Brain OAuth + Cloudflare OIDC
+    if (!expectedToken) {
+      return Response.json(
+        {
+          error: "Service Unavailable",
+          error_description: "Server authentication is not configured."
+        },
+        { status: 503, headers: corsHeaders }
       );
-      const isPskValid = provided === expectedToken;
-      const isSignedOAuthValid =
-        !isPskValid &&
-        Boolean(provided) &&
-        Boolean(await verifySignedToken(provided, "bat", signingSecret));
-      const isOidcValid =
-        !isPskValid &&
-        !isSignedOAuthValid &&
-        Boolean(provided) &&
-        (await verifyCloudflareOidcToken(provided, cfOidcBase, oauthClientId));
+    }
 
-      if (!isPskValid && !isSignedOAuthValid && !isOidcValid) {
-        return new Response(
-          JSON.stringify({
-            error: "Unauthorized",
-            error_description: "Bearer token or OAuth 2.0 credentials required"
-          }),
-          {
-            status: 401,
-            headers: {
-              "Content-Type": "application/json",
-              "WWW-Authenticate": `Bearer error="invalid_token", resource_metadata="${brainOrigin}/.well-known/oauth-protected-resource", as_uri="${brainOrigin}/.well-known/oauth-authorization-server"`,
-              ...corsHeaders
-            }
+    const provided = normalizeBearerToken(
+      request.headers.get("Authorization") || request.headers.get("X-Brain-Token")
+    );
+    const isPskValid = Boolean(provided) && (await timingSafeStringEqual(provided, expectedToken));
+    const isSignedOAuthValid =
+      !isPskValid &&
+      Boolean(provided) &&
+      Boolean(await verifySignedToken(provided, "bat", signingSecret));
+    const isOidcValid =
+      !isPskValid &&
+      !isSignedOAuthValid &&
+      Boolean(provided) &&
+      (await verifyCloudflareOidcToken(provided, cfOidcBase, oauthClientId));
+
+    if (!isPskValid && !isSignedOAuthValid && !isOidcValid) {
+      return new Response(
+        JSON.stringify({
+          error: "Unauthorized",
+          error_description: "Bearer token or OAuth 2.0 credentials required"
+        }),
+        {
+          status: 401,
+          headers: {
+            "Content-Type": "application/json",
+            "WWW-Authenticate": `Bearer error="invalid_token", resource_metadata="${brainOrigin}/.well-known/oauth-protected-resource", as_uri="${brainOrigin}/.well-known/oauth-authorization-server"`,
+            ...corsHeaders
           }
-        );
-      }
+        }
+      );
     }
 
     // Authenticated Cognitive NOC Dashboard Snapshot & 4-Way Recall Routes
@@ -1538,10 +1637,7 @@ export default {
     respHeaders.set("Mcp-Session-Id", sessionId);
 
     // Log OAuth-authenticated MCP calls asynchronously for live observability
-    const providedToken = normalizeBearerToken(
-      request.headers.get("Authorization") || request.headers.get("X-Brain-Token")
-    );
-    if (providedToken && providedToken !== expectedToken) {
+    if (provided && !isPskValid) {
       const rpcMethod =
         typeof parsedMcpBody === "object" &&
         parsedMcpBody !== null &&

@@ -28,7 +28,9 @@ export interface Env {
   RERANKER_MODEL: string;
   MCP_BEARER_TOKEN?: string;
   OAUTH_CLIENT_ID?: string;
+  OAUTH_CLIENT_SECRET?: string;
   OAUTH_TEAM_DOMAIN?: string;
+  OAUTH_ALLOWED_REDIRECT_ORIGINS?: string;
 }
 
 export type MemoryRecord = {
@@ -771,6 +773,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
       namespace: row.namespace,
       rawScore: row.raw_bm25,
       importance: row.importance ?? 0.6,
+      confidence: row.confidence ?? 1.0,
       updatedAtMs: row.updated_at * 1000
     }));
 
@@ -789,6 +792,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
         namespace: rec.namespace,
         rawScore: match.score,
         importance: rec.importance ?? 0.6,
+        confidence: rec.confidence ?? 1.0,
         updatedAtMs: rec.updated_at * 1000
       });
     }
@@ -815,18 +819,6 @@ export class BrainMemoryDO extends DurableObject<Env> {
         15
       )
       .toArray();
-
-    // Synaptic reinforcement: increment access_count for recalled Brain memories
-    if (topBrainIds.length > 0) {
-      this.sql.exec(
-        `UPDATE memories
-         SET access_count = access_count + 1,
-             last_accessed_at = ?2
-         WHERE id IN (SELECT value FROM json_each(?1))`,
-        JSON.stringify(topBrainIds),
-        now
-      );
-    }
 
     // Fetch active ADRs (compact bullet list) for context grounding
     const adrRows = this.sql
@@ -862,8 +854,30 @@ export class BrainMemoryDO extends DurableObject<Env> {
       kbVec: kbArchiveRes.vecResults,
       activeDecisions: activeDecisionLines,
       extraTriples,
-      tokenBudget
+      tokenBudget,
+      halfLifeDays: params.halfLifeDays
     });
+
+    // Telemetry only (not used in ranking): increment recall counters only for Brain memories
+    // that actually survived reranking and token-budget packing into <brain_context>.
+    const selectedBrainIds = Array.from(
+      new Set(
+        fused.candidates
+          .filter((c) => c.origin === "brain.tsimon.me")
+          .map((c) => (c.id.startsWith("brain:") ? c.id.slice("brain:".length) : c.id))
+          .filter(Boolean)
+      )
+    );
+    if (selectedBrainIds.length > 0) {
+      this.sql.exec(
+        `UPDATE memories
+         SET access_count = access_count + 1,
+             last_accessed_at = ?2
+         WHERE id IN (SELECT value FROM json_each(?1))`,
+        JSON.stringify(selectedBrainIds),
+        now
+      );
+    }
 
     return {
       compiledMarkdown: fused.contextBlock,
@@ -2396,6 +2410,8 @@ export class BrainMemoryDO extends DurableObject<Env> {
     namespace?: string;
     title?: string | null;
     vectorSynced?: boolean;
+    restoredEdgesCount?: number;
+    retiredEdgesCount?: number;
     error?: string;
   }> {
     const mutId = params.mutationId && params.mutationId > 0 ? params.mutationId : null;
@@ -2463,6 +2479,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
         (restoredContent.length > 280 ? `${restoredContent.slice(0, 277)}...` : restoredContent);
       const restoredImportance = target.old_importance ?? 0.6;
       const tokenCount = estimateTokens(`${restoredTitle}\n${restoredContent}`);
+      let restoredEdgesCount = 0;
 
       this.ctx.storage.transactionSync(() => {
         this.sql.exec(
@@ -2483,6 +2500,40 @@ export class BrainMemoryDO extends DurableObject<Env> {
           now,
           target.memory_id
         );
+
+        // If rolling back a supersede/DELETE mutation, also restore KG edges expired in that exact transaction
+        if (target.operation === "DELETE") {
+          const edgesToRestore = this.sql
+            .exec<{ edge_id: string }>(
+              `SELECT edge_id
+               FROM edges
+               WHERE valid_until = ?1
+                 AND (
+                   evidence_memory_id = ?2
+                   OR edge_id IN (
+                     SELECT existing_edge_id
+                     FROM memory_conflicts
+                     WHERE existing_memory_id = ?2
+                       AND resolution_action = 'supersede'
+                       AND resolved_at = ?1
+                       AND existing_edge_id IS NOT NULL
+                   )
+                 )`,
+              target.created_at,
+              target.memory_id
+            )
+            .toArray();
+
+          if (edgesToRestore.length > 0) {
+            this.sql.exec(
+              `UPDATE edges
+               SET valid_until = NULL
+               WHERE edge_id IN (SELECT value FROM json_each(?1))`,
+              JSON.stringify(edgesToRestore.map((e) => e.edge_id))
+            );
+            restoredEdgesCount = edgesToRestore.length;
+          }
+        }
 
         this.sql.exec(
           `UPDATE memory_mutations SET rolled_back = 1 WHERE mutation_id = ?1`,
@@ -2547,12 +2598,36 @@ export class BrainMemoryDO extends DurableObject<Env> {
         memoryId: target.memory_id,
         namespace: target.namespace,
         title: restoredTitle,
-        vectorSynced: Boolean(vec)
+        vectorSynced: Boolean(vec),
+        restoredEdgesCount
       };
     }
 
-    // Case B: Mutation was an INSERT/CONSOLIDATE with no previous version -> delete memory & vector
+    // Case B: Mutation was an INSERT/CONSOLIDATE with no previous version -> retire linked non-protected edges & delete memory + vector
+    let retiredEdgesCount = 0;
     this.ctx.storage.transactionSync(() => {
+      const linkedEdges = this.sql
+        .exec<{ edge_id: string }>(
+          `SELECT edge_id
+           FROM edges
+           WHERE evidence_memory_id = ?1
+             AND valid_until IS NULL`,
+          target.memory_id
+        )
+        .toArray()
+        .filter((e) => !isProtectedInfrastructure(e.edge_id));
+
+      if (linkedEdges.length > 0) {
+        this.sql.exec(
+          `UPDATE edges
+           SET valid_until = ?1
+           WHERE edge_id IN (SELECT value FROM json_each(?2))`,
+          now,
+          JSON.stringify(linkedEdges.map((e) => e.edge_id))
+        );
+        retiredEdgesCount = linkedEdges.length;
+      }
+
       this.sql.exec(`DELETE FROM memories WHERE id = ?1`, target.memory_id);
       this.sql.exec(
         `UPDATE memory_mutations SET rolled_back = 1 WHERE mutation_id = ?1`,
@@ -2593,7 +2668,8 @@ export class BrainMemoryDO extends DurableObject<Env> {
       memoryId: target.memory_id,
       namespace: target.namespace,
       title: target.new_title,
-      vectorSynced: true
+      vectorSynced: true,
+      retiredEdgesCount
     };
   }
 

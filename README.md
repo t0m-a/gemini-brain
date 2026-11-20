@@ -15,7 +15,7 @@
 [![RPi5 Edge Sync](https://img.shields.io/badge/Raspberry_Pi_5-Debian_13_AST_%2B_Qdrant_Sync-A22846?style=for-the-badge&logo=raspberrypi&logoColor=white)](./rpi-sync/brain_watcher.py)
 [![TypeScript 5.8](https://img.shields.io/badge/TypeScript-5.8_Strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](./tsconfig.json)
 
-**A stateful, globally distributed cognitive layer hosted on the Cloudflare Edge (`v1.5.0`) that unifies Google Antigravity, Gemini CLI, the Gemini Web App (via native OAuth 2.0/2.1), a live Cognitive NOC Web Dashboard, Active Memory Governance & Semantic Contradiction Triage (`memory_conflicts`), and a Raspberry Pi 5 Home Lab into a single persistent memory brain.**
+**A stateful, globally distributed cognitive layer hosted on the Cloudflare Edge (`v1.5.1`) that unifies Google Antigravity, Gemini CLI, the Gemini Web App (via native OAuth 2.0/2.1), a live Cognitive NOC Web Dashboard, Active Memory Governance & Semantic Contradiction Triage (`memory_conflicts`), and a Raspberry Pi 5 Home Lab into a single persistent memory brain.**
 
 [Layman's Architecture](#-part-i-architecture--how-it-works-in-laymans-terms) •
 [How to Use & Schedules](#-part-ii-how-to-use-it-laymans-guide-modules-roles--schedules) •
@@ -132,7 +132,7 @@ Just like a human brain stores different kinds of information in different ways,
 | Memory Vault | Everyday Analogy | What It Stores | How the Brain Uses It |
 | :--- | :--- | :--- | :--- |
 | **1. The Rulebook**<br/>*(Architecture Decision Records / `decisions`)* | **Constitutional Laws** | Strict, non-negotiable engineering decisions (and why you made them). | Whenever you ask the Brain for context, it pins active rules **at the very top** of the answer so no AI assistant ever breaks your rules. If a rule changes later, the new rule marks the old one as "superseded" (retired). |
-| **2. The Encyclopedia & Cookbook**<br/>*(Semantic & Procedural `memories`)* | **Reference Books & Recipe Cards** | Permanent facts, server configurations, documentation ("Semantic"), and actual code functions/scripts ("Procedural"). | Searched by both **exact words** and **overall meaning** whenever you ask a question. Memories you use often get a "popularity counter" boost (synaptic reinforcement). |
+| **2. The Encyclopedia & Cookbook**<br/>*(Semantic & Procedural `memories`)* | **Reference Books & Recipe Cards** | Permanent facts, server configurations, documentation ("Semantic"), and actual code functions/scripts ("Procedural"). | Searched by both **exact words** and **overall meaning** whenever you ask a question, ranked by RRF + Cross-Encoder Reranking + importance/confidence/half-life decay (`access_count` is tracked purely as recall telemetry, not a ranking popularity bias). |
 | **3. The Mind-Map**<br/>*(Knowledge Graph `entities` & `edges`)* | **A Detective's String Board** | Connections between things in the form of `(Subject) --> [RELATION] --> (Object)`. For example: `(Raspberry Pi 5) --> [EXPOSES_PORT] --> (WireGuard UDP 51820)`. | When the Brain finds a relevant fact, it automatically follows the strings **one step outward ("1-hop")** to pull in connected equipment, domains, or files you didn't even think to ask for. |
 | **4. The Daily Scratchpad**<br/>*(Episodic Logs `episodic_logs`)* | **A Daytime Sticky-Note Pad** | Quick, raw notes jotted down during coding or troubleshooting (bugs fixed, checkpoints reached, observations). | Held temporarily during the day so you don't clutter the Encyclopedia. Every night at **3:00 AM**, the Brain wakes up, reads all sticky notes from the day, writes one clean summary page into the Encyclopedia, and checks off the sticky notes. |
 
@@ -499,7 +499,7 @@ flowchart TB
         AUTH["Dual-Mode Auth Gate<br/>(0ms PSK + HMAC-SHA256 bat.* + RS256 OIDC)"]
         NOC_MUX["WAF-Safe NOC Multiplexer<br/>(GET /mcp?ui=1 & POST /mcp?noc=<action>)"]
         CARD["SEP-2127 Discovery Card<br/>/server-card & /.well-known/mcp/server-card.json"]
-        MCP["McpServer v1.5.0<br/>(WebStandardStreamableHTTPServerTransport JSON-Mode)"]
+        MCP["McpServer v1.5.1 (package.json)<br/>(WebStandardStreamableHTTPServerTransport JSON-Mode)"]
         FED_SVC["KbFederationService<br/>(WorkerEntrypoint Cap'n Proto RPC)"]
     end
 
@@ -566,11 +566,11 @@ flowchart TB
   - Normalizes incoming `Accept` headers to `"application/json, text/event-stream"` and strips restrictive browser `Origin` headers (such as `Origin: https://gemini.google.com`) after authentication so web-based MCP clients never encounter `403 Invalid Origin` or `406 Not Acceptable` transport errors.
 - **OAuth 2.0 / 2.1 Discovery & Cloudflare Zero Trust OIDC Proxy ([lines 615–995](file:///c:/Users/simon/Workspaces/gemini-brain/src/index.ts#L615-L995)):**
   - Exposes public RFC 9728 Protected Resource Metadata (`GET /.well-known/oauth-protected-resource`) and RFC 8414 / OpenID Connect Discovery (`GET /.well-known/oauth-authorization-server`, `GET /.well-known/openid-configuration`, `GET /.well-known/jwks.json`).
-  - `GET /authorize`: Enforces `scope="openid email profile"`, wraps the client's dynamic `redirect_uri`, `state`, and PKCE `code_challenge` into an HMAC-SHA256 signed state token (`bstate.*`), and redirects the user to Cloudflare Zero Trust (`https://zero-trust-subdmain-XXXX.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<CLIENT_ID>/authorization`).
-  - `GET /callback`: Verifies `bstate.*` upon return from Cloudflare Zero Trust login, mints a short-lived HMAC-SHA256 signed authorization code (`bcode.*`), and redirects back to the originating MCP client callback URL.
-  - `POST /token`: Validates `bcode.*` (and PKCE `S256` `code_verifier` when present) and issues a **30-day HMAC-SHA256 signed `access_token` (`bat.*`)** and **365-day `refresh_token` (`brt.*`)**, with `redirect: "manual"` enforced on fallback upstream token calls so `302` redirects are never swallowed.
-- **Dual-Mode Auth Gate ([lines 1151–1182](file:///c:/Users/simon/Workspaces/gemini-brain/src/index.ts#L1151-L1182)):**
-  1. **Fast-Path PSK (`0 ms` overhead)**: Checks `provided === normalizeBearerToken(env.MCP_BEARER_TOKEN)`. Used by **Google Antigravity**, **Gemini CLI**, `brain-dashboard.ps1`, and RPi5 sync daemons.
+  - `GET /authorize`: Enforces `scope="openid email profile"`, validates `client_id` and `redirect_uri` against a strict allowlist (`isAllowedRedirectUri` in `src/auth.ts`), wraps the client's `redirect_uri`, `state`, and PKCE `code_challenge` into an HMAC-SHA256 signed state token (`bstate.*`), and redirects the user to Cloudflare Zero Trust (`https://zero-trust-subdmain-XXXX.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<CLIENT_ID>/authorization`).
+  - `GET /callback`: Verifies `bstate.*` and re-validates `redirect_uri` upon return from Cloudflare Zero Trust login, wraps the upstream `cfCode` into a 5-minute HMAC-SHA256 signed envelope (`bcode.*`), and redirects back to the originating MCP client callback URL.
+  - `POST /token`: Validates `bcode.*`, enforces mandatory PKCE `S256` `code_verifier` and `redirect_uri` binding, **redeems the wrapped `cfCode` upstream at Cloudflare Access (`${cfOidcBase}/token`) and verifies the returned OIDC JWT/identity against JWKS (failing closed on rejection)**, and only then issues a **30-day HMAC-SHA256 signed `access_token` (`bat.*`)** and **365-day `refresh_token` (`brt.*`)**.
+- **Dual-Mode Auth Gate (Fail-Closed, Constant-Time):**
+  1. **Fast-Path PSK (`0 ms` overhead)**: Constant-time SHA-256 comparison (`timingSafeStringEqual`) against `normalizeBearerToken(env.MCP_BEARER_TOKEN)` (fails closed with HTTP `503` if unset). Used by **Google Antigravity**, **Gemini CLI**, `brain-dashboard.ps1`, and RPi5 sync daemons.
   2. **HMAC-SHA256 Signed OAuth Token (`< 0.1 ms` overhead)**: Verifies `bat.*` tokens issued to the **Gemini Web App** using Web Crypto HMAC-SHA256.
   3. **Cloudflare OIDC JWT / Userinfo Fallback**: Verifies RS256 signatures against Cloudflare Access JWKS (`verifyCloudflareOidcJwt`) and `/userinfo` with 5-minute edge caching (`caches.default`).
   4. **RFC 9728 `401` Challenge**: Unauthenticated requests to `/mcp` receive `HTTP 401` with `WWW-Authenticate: Bearer error="invalid_token", resource_metadata="https://brain.tsimon.me/.well-known/oauth-protected-resource", as_uri="https://brain.tsimon.me/.well-known/oauth-authorization-server"`.
@@ -619,7 +619,7 @@ erDiagram
         INTEGER token_count "Pre-estimated token count (ceil(chars/4))"
         REAL importance "Salience weight [0.0, 1.0], DEFAULT 0.5"
         REAL confidence "Epistemic certainty [0.0, 1.0], DEFAULT 1.0"
-        INTEGER access_count "Synaptic reinforcement counter"
+        INTEGER access_count "Packed recall telemetry counter (not used in ranking)"
         TEXT superseded_by FK "NULL if active"
         TEXT metadata_json "JSON attributes"
         INTEGER created_at "unixepoch()"
@@ -841,13 +841,13 @@ sequenceDiagram
     DO->>SQL: Exec GRAPH_EXPANSION_SQL (seedIds = top 6 FTS U top 6 Vec, queryTerms)
     SQL-->>DO: 1-Hop GraphTriples (ordered by PageRank salience)
 
-    DO->>SQL: Synaptic Reinforcement (UPDATE memories SET access_count = access_count + 1)
-    DO->>SQL: Fetch Active ADRs (SELECT ... FROM decisions WHERE status = 'active' LIMIT 5)
+    DO->>SQL: Fetch Active ADRs (SELECT ... FROM decisions WHERE status = 'active' LIMIT 8)
     SQL-->>DO: activeDecisionLines
 
-    DO->>Fed: fuseBrainAndKb({ brainFts, brainVec, kbFts, kbVec, activeDecisions, extraTriples, tokenBudget })
-    Fed->>Fed: Compute Weighted RRF (k=60) * ImportanceBoost * ExponentialDecay
-    Fed->>Fed: Pack ADRs (<=25%) -> Pack 1-Hop KG (<=45%) -> Promote #1 Signal Leaders -> Pack Chunks
+    DO->>Fed: fuseBrainAndKb({ brainFts, brainVec, kbFts, kbVec, activeDecisions, extraTriples, tokenBudget, halfLifeDays })
+    Fed->>Fed: Compute Weighted RRF (k=60) * ImportanceBoost * ConfidenceBoost * HalfLifeDecay + Cross-Encoder Rerank
+    Fed->>Fed: Pack ADRs (<=25%) -> Pack 1-Hop KG (<=45%) -> Guarantee Top Reranked Brain/KB -> Pack Chunks
+    DO->>SQL: Telemetry Update (UPDATE memories SET access_count = access_count + 1 for packed Brain chunks)
     Fed-->>DO: FusedContextResult (<brain_context> XML)
     DO-->>Worker: { compiledMarkdown, tokensUsed, matchedCount, ... }
     Worker-->>Client: JSON-RPC 2.0 Result (<brain_context> block)
