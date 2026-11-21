@@ -844,4 +844,69 @@ describe("BrainMemoryDO SQLite, FTS5, Governance, Guardrails & Rollback invarian
     expect(overflowErrorsThrown).toBeGreaterThan(0);
     expect(vectorIndex.vectors.size).toBe(5);
   });
+
+  it("purges targeted gemini-web-oauth tool_call episodic logs while preserving other events", async () => {
+    const state = createMockDurableObjectState();
+    const { env } = createMockEnv();
+    const brain = new BrainMemoryDO(state as unknown as DurableObjectState, env);
+    await state.waitUntilReady();
+
+    await brain.logEpisodicEvent({
+      sessionId: "brain-stateless-session",
+      clientId: "gemini-web-oauth",
+      eventType: "tool_call",
+      payload: JSON.stringify({ rpcMethod: "tools/call", toolName: "hybrid_recall", status: 200 })
+    });
+    await brain.logEpisodicEvent({
+      sessionId: "brain-stateless-session",
+      clientId: "gemini-web-oauth",
+      eventType: "tool_call",
+      payload: JSON.stringify({ rpcMethod: "tools/call", toolName: "get_overnight_diff", status: 200 })
+    });
+    await brain.logEpisodicEvent({
+      sessionId: "oauth-diag",
+      clientId: "gemini-web-oauth-diag",
+      eventType: "observation",
+      payload: JSON.stringify({ route: "/token", status: 400 })
+    });
+    await brain.logEpisodicEvent({
+      sessionId: "sess-real",
+      clientId: "antigravity-win11",
+      eventType: "checkpoint",
+      payload: "Substantive engineering checkpoint."
+    });
+
+    // Guardrail: reject unfiltered purge
+    await expect(brain.purgeEpisodicLogs({})).rejects.toThrow(/requires at least one/i);
+
+    // Dry run reports exact matches without deleting
+    const dry = await brain.purgeEpisodicLogs({
+      clientId: "gemini-web-oauth",
+      eventType: "tool_call",
+      dryRun: true
+    });
+    expect(dry.ok).toBe(true);
+    expect(dry.dryRun).toBe(true);
+    expect(dry.matchedCount).toBe(2);
+    expect(dry.deletedCount).toBe(0);
+    expect(dry.remainingTotal).toBe(4);
+
+    // Execute purge
+    const purged = await brain.purgeEpisodicLogs({
+      clientId: "gemini-web-oauth",
+      eventType: "tool_call"
+    });
+    expect(purged.ok).toBe(true);
+    expect(purged.dryRun).toBe(false);
+    expect(purged.matchedCount).toBe(2);
+    expect(purged.deletedCount).toBe(2);
+    expect(purged.remainingTotal).toBe(2);
+    expect(purged.remainingPending).toBe(2);
+
+    const remainingClients = state.sql
+      .exec<{ client_id: string }>(`SELECT client_id FROM episodic_logs ORDER BY log_id ASC`)
+      .toArray()
+      .map((r) => r.client_id);
+    expect(remainingClients).toEqual(["gemini-web-oauth-diag", "antigravity-win11"]);
+  });
 });

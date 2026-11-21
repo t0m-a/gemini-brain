@@ -685,38 +685,6 @@ function createBrainMcpServer(env: Env, defaultClientId?: string) {
 
 const BRAIN_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#0b1120"/><circle cx="32" cy="32" r="18" fill="none" stroke="#06b6d4" stroke-width="4"/><circle cx="32" cy="32" r="7" fill="#10b981"/></svg>`;
 
-const NOISY_MCP_RPC_METHODS = new Set([
-  "initialize",
-  "notifications/initialized",
-  "notifications/cancelled",
-  "notifications/roots/list_changed",
-  "tools/list",
-  "resources/list",
-  "resources/templates/list",
-  "prompts/list",
-  "ping",
-  "logging/setLevel"
-]);
-
-/**
- * Determines whether an OAuth-authenticated MCP JSON-RPC call carries substantive signal
- * worth persisting into episodic_logs. Protocol handshake/discovery traffic (initialize,
- * notifications/initialized, tools/list, etc.) is skipped on 2xx responses so it does not
- * crowd out the nocturnal consolidation window.
- */
-export function shouldLogOAuthMcpCall(parsedBody: unknown, status: number): boolean {
-  if (status >= 400) return true;
-  if (Array.isArray(parsedBody)) {
-    if (parsedBody.length === 0) return false;
-    return parsedBody.some((item) => shouldLogOAuthMcpCall(item, status));
-  }
-  if (typeof parsedBody === "object" && parsedBody !== null && "method" in parsedBody) {
-    const method = String((parsedBody as { method?: unknown }).method || "").trim();
-    return !NOISY_MCP_RPC_METHODS.has(method);
-  }
-  return true;
-}
-
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -1727,6 +1695,26 @@ export default {
           return Response.json(valRes, { status: 200, headers: corsHeaders });
         }
 
+        if (action === "purge_episodic") {
+          const validEventTypes = new Set([
+            "tool_call",
+            "observation",
+            "checkpoint",
+            "error_resolution"
+          ]);
+          const eventType =
+            typeof body.eventType === "string" && validEventTypes.has(body.eventType)
+              ? (body.eventType as "tool_call" | "observation" | "checkpoint" | "error_resolution")
+              : undefined;
+          const purgeRes = await stub.purgeEpisodicLogs({
+            clientId: typeof body.clientId === "string" ? body.clientId : undefined,
+            eventType,
+            consolidatedOnly: body.consolidatedOnly === true,
+            dryRun: body.dryRun === true
+          });
+          return Response.json(purgeRes, { status: 200, headers: corsHeaders });
+        }
+
         return Response.json(
           { ok: false, error: `Unknown NOC action: ${action}` },
           { status: 400, headers: corsHeaders }
@@ -2063,35 +2051,6 @@ export default {
       request.headers.get("mcp-session-id") ||
       "brain-stateless-session";
     respHeaders.set("Mcp-Session-Id", sessionId);
-
-    // Log substantive OAuth-authenticated MCP calls asynchronously (skip initialize/tools/list/handshake noise)
-    if (provided && !isPskValid && shouldLogOAuthMcpCall(parsedMcpBody, mcpResponse.status)) {
-      const rpcObj =
-        typeof parsedMcpBody === "object" && parsedMcpBody !== null && !Array.isArray(parsedMcpBody)
-          ? (parsedMcpBody as { method?: unknown; params?: { name?: unknown; uri?: unknown } })
-          : null;
-      const rpcMethod = rpcObj && "method" in rpcObj ? String(rpcObj.method) : "batch";
-      const toolName =
-        rpcMethod === "tools/call" && typeof rpcObj?.params?.name === "string"
-          ? rpcObj.params.name
-          : undefined;
-      ctx.waitUntil(
-        getBrainStub()
-          .logEpisodicEvent({
-            sessionId,
-            clientId: "gemini-web-oauth",
-            eventType: "tool_call",
-            payload: JSON.stringify({
-              rpcMethod,
-              ...(toolName ? { toolName } : {}),
-              status: mcpResponse.status,
-              ua: request.headers.get("User-Agent") || "",
-              origin: request.headers.get("Origin") || ""
-            })
-          })
-          .catch(() => {})
-      );
-    }
 
     return new Response(mcpResponse.body, {
       status: mcpResponse.status,

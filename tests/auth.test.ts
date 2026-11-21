@@ -11,7 +11,7 @@ import {
   verifyPkceChallenge,
   verifySignedToken
 } from "../src/auth";
-import worker, { shouldLogOAuthMcpCall } from "../src/index";
+import worker from "../src/index";
 import { createMockEnv } from "./mocks/do-sqlite-adapter";
 
 const BRAIN_ORIGIN = "https://brain.tsimon.me";
@@ -434,55 +434,7 @@ describe("Worker HTTP auth & OAuth 2.1 boundary enforcement (src/index.ts)", () 
     expect(violations).toEqual([]);
   });
 
-  it("skips episodic logging for 2xx MCP handshake/discovery RPCs while preserving tools/call and errors", async () => {
-    // Pure predicate unit checks
-    for (const method of [
-      "initialize",
-      "notifications/initialized",
-      "notifications/cancelled",
-      "notifications/roots/list_changed",
-      "tools/list",
-      "resources/list",
-      "resources/templates/list",
-      "prompts/list",
-      "ping",
-      "logging/setLevel"
-    ]) {
-      expect(shouldLogOAuthMcpCall({ jsonrpc: "2.0", id: 1, method }, 200)).toBe(false);
-      // Errors (>=400) on handshake methods MUST still be logged for diagnostics
-      expect(shouldLogOAuthMcpCall({ jsonrpc: "2.0", id: 1, method }, 500)).toBe(true);
-    }
-
-    expect(
-      shouldLogOAuthMcpCall(
-        [
-          { jsonrpc: "2.0", id: 1, method: "initialize" },
-          { jsonrpc: "2.0", id: 2, method: "tools/list" }
-        ],
-        200
-      )
-    ).toBe(false);
-    expect(shouldLogOAuthMcpCall([], 200)).toBe(false);
-    expect(
-      shouldLogOAuthMcpCall(
-        [
-          { jsonrpc: "2.0", id: 1, method: "initialize" },
-          { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "hybrid_recall" } }
-        ],
-        200
-      )
-    ).toBe(true);
-    expect(
-      shouldLogOAuthMcpCall(
-        { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "hybrid_recall" } },
-        200
-      )
-    ).toBe(true);
-    expect(shouldLogOAuthMcpCall({ jsonrpc: "2.0", id: 4, method: "resources/read" }, 200)).toBe(
-      true
-    );
-
-    // End-to-end Worker OAuth fetch check with spy on BRAIN_DO.logEpisodicEvent
+  it("does not emit automatic gemini-web-oauth tool_call episodic logs for OAuth MCP calls", async () => {
     const loggedEvents: Array<{ clientId?: string; eventType: string; payload: string }> = [];
     const pendingWaits: Promise<unknown>[] = [];
     const execCtx = {
@@ -513,7 +465,7 @@ describe("Worker HTTP auth & OAuth 2.1 boundary enforcement (src/index.ts)", () 
       TEST_SECRET
     );
 
-    // 1. Noisy 2xx handshakes should NOT write to episodic_logs
+    // 1. Handshake RPCs AND tools/call over OAuth must NOT write gemini-web-oauth tool_call episodic logs
     for (const body of [
       {
         jsonrpc: "2.0",
@@ -526,7 +478,13 @@ describe("Worker HTTP auth & OAuth 2.1 boundary enforcement (src/index.ts)", () 
         }
       },
       { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
-      { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }
+      { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "get_overnight_diff", arguments: { hours: 12 } }
+      }
     ]) {
       const r = await worker.fetch(
         new Request(`${BRAIN_ORIGIN}/mcp`, {
@@ -546,38 +504,7 @@ describe("Worker HTTP auth & OAuth 2.1 boundary enforcement (src/index.ts)", () 
     await Promise.allSettled(pendingWaits);
     expect(loggedEvents).toHaveLength(0);
 
-    // 2. Substantive tools/call MUST be logged with toolName included
-    const callRes = await worker.fetch(
-      new Request(`${BRAIN_ORIGIN}/mcp`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json, text/event-stream",
-          Authorization: `Bearer ${bat}`
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 3,
-          method: "tools/call",
-          params: { name: "get_overnight_diff", arguments: { hours: 12 } }
-        })
-      }),
-      env,
-      execCtx
-    );
-    expect(callRes.status).toBe(200);
-    await Promise.allSettled(pendingWaits);
-    expect(loggedEvents).toHaveLength(1);
-    const parsedPayload = JSON.parse(loggedEvents[0].payload) as {
-      rpcMethod: string;
-      toolName?: string;
-      status: number;
-    };
-    expect(parsedPayload.rpcMethod).toBe("tools/call");
-    expect(parsedPayload.toolName).toBe("get_overnight_diff");
-    expect(parsedPayload.status).toBe(200);
-
-    // 3. Smoke verifier UA should NOT pollute episodic_logs via logAuthDiag
+    // 2. Smoke verifier UA should NOT pollute episodic_logs via logAuthDiag
     const smokeRes = await worker.fetch(
       new Request(`${BRAIN_ORIGIN}/authorize?redirect_uri=${encodeURIComponent("https://evil.example/cb")}`, {
         headers: { "User-Agent": "BrainMCP-Verifier/2.0" }
@@ -587,7 +514,64 @@ describe("Worker HTTP auth & OAuth 2.1 boundary enforcement (src/index.ts)", () 
     );
     expect(smokeRes.status).toBe(400);
     await Promise.allSettled(pendingWaits);
-    expect(loggedEvents).toHaveLength(1);
+    expect(loggedEvents).toHaveLength(0);
+  });
+
+  it("routes authenticated NOC purge_episodic action to BRAIN_DO.purgeEpisodicLogs", async () => {
+    const purgeCalls: Array<Record<string, unknown>> = [];
+    const { env } = createMockEnv();
+    env.BRAIN_DO = {
+      idFromName: () => "singleton-brain-id",
+      get: () => ({
+        purgeEpisodicLogs: async (input: Record<string, unknown>) => {
+          purgeCalls.push(input);
+          return {
+            ok: true,
+            dryRun: Boolean(input.dryRun),
+            matchedCount: 372,
+            deletedCount: input.dryRun ? 0 : 372,
+            remainingTotal: 107,
+            remainingPending: 4,
+            filters: {
+              clientId: (input.clientId as string) || null,
+              eventType: (input.eventType as string) || null,
+              consolidatedOnly: Boolean(input.consolidatedOnly)
+            }
+          };
+        }
+      })
+    } as unknown as typeof env.BRAIN_DO;
+
+    const res = await worker.fetch(
+      new Request(`${BRAIN_ORIGIN}/mcp?noc=purge_episodic`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TEST_SECRET}`,
+          "X-Brain-Noc-Action": "purge_episodic"
+        },
+        body: JSON.stringify({
+          clientId: "gemini-web-oauth",
+          eventType: "tool_call",
+          dryRun: false
+        })
+      }),
+      env,
+      createExecCtx()
+    );
+
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { ok: boolean; deletedCount: number };
+    expect(data.ok).toBe(true);
+    expect(data.deletedCount).toBe(372);
+    expect(purgeCalls).toEqual([
+      {
+        clientId: "gemini-web-oauth",
+        eventType: "tool_call",
+        consolidatedOnly: false,
+        dryRun: false
+      }
+    ]);
   });
 
   it("propagates X-Brain-Client-Id header as default clientId for MCP writes without filtering get_overnight_diff", async () => {

@@ -1767,6 +1767,99 @@ export class BrainMemoryDO extends DurableObject<Env> {
   }
 
   /**
+   * RPC Method 4B: Purge matching rows from episodic_logs (requires at least one explicit filter).
+   */
+  async purgeEpisodicLogs(input: {
+    clientId?: string;
+    eventType?: "tool_call" | "observation" | "checkpoint" | "error_resolution";
+    consolidatedOnly?: boolean;
+    dryRun?: boolean;
+  }): Promise<{
+    ok: boolean;
+    dryRun: boolean;
+    matchedCount: number;
+    deletedCount: number;
+    remainingTotal: number;
+    remainingPending: number;
+    filters: {
+      clientId: string | null;
+      eventType: string | null;
+      consolidatedOnly: boolean;
+    };
+  }> {
+    const clientFilter = (input.clientId || "").trim();
+    const validTypes = new Set(["tool_call", "observation", "checkpoint", "error_resolution"]);
+    const eventTypeFilter =
+      input.eventType && validTypes.has(input.eventType) ? input.eventType : "";
+    const consolidatedOnly = input.consolidatedOnly === true;
+    const dryRun = input.dryRun === true;
+
+    if (!clientFilter && !eventTypeFilter) {
+      throw new Error("purgeEpisodicLogs requires at least one of 'clientId' or 'eventType'.");
+    }
+
+    const whereSql =
+      `WHERE (?1 = '' OR client_id = ?1)
+         AND (?2 = '' OR event_type = ?2)
+         AND (?3 = 0 OR consolidated = 1)`;
+
+    let matchedCount = 0;
+    let deletedCount = 0;
+
+    if (dryRun) {
+      matchedCount = this.sql
+        .exec<{ count: number }>(
+          `SELECT COUNT(*) AS count FROM episodic_logs ${whereSql}`,
+          clientFilter,
+          eventTypeFilter,
+          consolidatedOnly ? 1 : 0
+        )
+        .one().count;
+    } else {
+      this.ctx.storage.transactionSync(() => {
+        matchedCount = this.sql
+          .exec<{ count: number }>(
+            `SELECT COUNT(*) AS count FROM episodic_logs ${whereSql}`,
+            clientFilter,
+            eventTypeFilter,
+            consolidatedOnly ? 1 : 0
+          )
+          .one().count;
+        if (matchedCount > 0) {
+          this.sql.exec(
+            `DELETE FROM episodic_logs ${whereSql}`,
+            clientFilter,
+            eventTypeFilter,
+            consolidatedOnly ? 1 : 0
+          );
+          deletedCount = matchedCount;
+        }
+      });
+    }
+
+    const remainingTotal = this.sql
+      .exec<{ count: number }>(`SELECT COUNT(*) AS count FROM episodic_logs`)
+      .one().count;
+    const remainingPending = this.sql
+      .exec<{ count: number }>(`SELECT COUNT(*) AS count FROM episodic_logs WHERE consolidated = 0`)
+      .one().count;
+
+    return {
+      ok: true,
+      dryRun,
+      matchedCount,
+      deletedCount,
+      remainingTotal,
+      remainingPending,
+      filters: {
+        clientId: clientFilter || null,
+        eventType: eventTypeFilter || null,
+        consolidatedOnly
+      }
+    };
+  }
+
+  /**
    * RPC Method 5: Retrieve Active Architecture Decision Records (ADRs) as Markdown across All or Specific Namespaces
    */
   async getActiveDecisions(namespace = "all"): Promise<string> {
