@@ -269,21 +269,37 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       background: rgba(11, 17, 32, 0.88);
       backdrop-filter: blur(12px);
       border-bottom: 1px solid var(--border);
-      padding: 12px 20px;
+      padding: 10px 20px;
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
+      gap: 10px 14px;
+    }
+    .header-primary {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: center;
+      gap: clamp(10px, 1.4vw, 18px);
+      flex: 1 1 1120px;
+      min-width: 0;
+      max-width: 100%;
     }
     .brand-group {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
+      flex: 0 1 auto;
+      min-width: 0;
+      max-width: clamp(200px, 34vw, 420px);
+    }
+    .brand-text {
+      min-width: 0;
     }
     .pulse-dot {
       width: 10px;
       height: 10px;
+      flex-shrink: 0;
       border-radius: 50%;
       background: var(--emerald);
       box-shadow: 0 0 12px var(--emerald);
@@ -294,40 +310,121 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       50% { transform: scale(1.25); opacity: 0.65; }
     }
     .brand-title {
-      font-size: 16px;
+      font-size: clamp(13.5px, 1.1vw, 16px);
       font-weight: 700;
       letter-spacing: -0.01em;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .brand-title-text {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .brand-sub {
-      font-size: 11.5px;
+      font-size: clamp(10px, 0.78vw, 11.5px);
       color: var(--text-2);
       font-family: var(--font-mono);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .kpi-strip {
+      container-type: inline-size;
+      container-name: kpi-strip;
+      flex: 1 1 0%;
+      min-width: 0;
       display: flex;
-      flex-wrap: wrap;
       align-items: center;
-      gap: 10px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    .kpi-strip::-webkit-scrollbar {
+      display: none;
+    }
+    .kpi-strip-track {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: stretch;
+      gap: clamp(5px, 0.55vw, 8px);
+      margin-left: auto;
+      max-width: 100%;
     }
     .kpi-pill {
       background: var(--bg-2);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 5px 11px;
+      padding: 4px clamp(6px, 0.7vw, 10px);
       display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 12px;
+      flex-direction: column;
+      justify-content: center;
+      gap: 1px;
+      flex: 0 1 auto;
+      min-width: 56px;
+      overflow: hidden;
+      transition: border-color 0.15s ease;
+    }
+    .kpi-pill:hover {
+      border-color: var(--border-hi);
     }
     .kpi-pill .label {
       color: var(--text-2);
-      font-size: 11px;
+      font-size: clamp(9.5px, 0.68vw, 10.5px);
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .kpi-pill .val {
       font-family: var(--font-mono);
       font-weight: 700;
+      font-size: clamp(10.5px, 0.8vw, 12px);
+      line-height: 1.25;
       color: var(--text-0);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    @container kpi-strip (max-width: 860px) {
+      .kpi-strip-track {
+        gap: 5px;
+      }
+      .kpi-pill {
+        padding: 3px 7px;
+      }
+      .kpi-pill .label {
+        font-size: 9.5px;
+      }
+      .kpi-pill .val {
+        font-size: 11px;
+      }
+    }
+    @container kpi-strip (max-width: 660px) {
+      .kpi-strip-track {
+        gap: 4px;
+      }
+      .kpi-pill {
+        padding: 3px 6px;
+        min-width: 48px;
+      }
+      .kpi-pill .label {
+        font-size: 9px;
+      }
+      .kpi-pill .val {
+        font-size: 10px;
+      }
+    }
+    .header-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+      margin-left: auto;
     }
 
     /* Navigation Tabs */
@@ -466,6 +563,64 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       gap: 10px;
       margin-top: 6px;
       font-family: var(--font-mono);
+    }
+    .surfaces-extra {
+      display: grid;
+      grid-template-rows: 0fr;
+      opacity: 0;
+      pointer-events: none;
+      margin-top: 0;
+      transition: grid-template-rows 0.22s ease, opacity 0.18s ease, margin-top 0.22s ease;
+    }
+    .surfaces-extra.expanded {
+      grid-template-rows: 1fr;
+      opacity: 1;
+      pointer-events: auto;
+      margin-top: 10px;
+    }
+    .surfaces-extra-inner {
+      overflow: hidden;
+    }
+    .surfaces-toggle-btn {
+      width: 100%;
+      margin-top: 10px;
+      padding: 7px 12px;
+      border-radius: 8px;
+      border: 1px dashed var(--border-hi);
+      background: rgba(15, 23, 42, 0.72);
+      color: var(--cyan);
+      font-size: 11.5px;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    }
+    .surfaces-toggle-btn:hover {
+      background: rgba(6, 182, 212, 0.12);
+      border-color: var(--cyan);
+      color: var(--text-0);
+    }
+    .surfaces-toggle-chevron {
+      display: inline-block;
+      transition: transform 0.2s ease;
+      font-size: 11px;
+    }
+    .surfaces-toggle-btn[aria-expanded="true"] .surfaces-toggle-chevron {
+      transform: rotate(180deg);
+    }
+    .surfaces-header-toggle {
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: filter 0.15s ease;
+    }
+    .surfaces-header-toggle:hover {
+      filter: brightness(1.15);
     }
 
     /* Graph Canvas */
@@ -780,42 +935,46 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
 
   <!-- TOP TELEMETRY PULSE HEADER -->
   <header class="top-header">
-    <div class="brand-group">
-      <div class="pulse-dot" id="status-dot"></div>
-      <div>
-        <div class="brand-title">🧠 Gemini Brain Cognitive NOC <span class="badge badge-cyan" style="font-size:10px; vertical-align:middle; margin-left:6px;">v${version}</span></div>
-        <div class="brand-sub">brain.${primaryDomain} • BrainMemoryDO + D1 Archive + Dual Vectorize</div>
+    <div class="header-primary">
+      <div class="brand-group">
+        <div class="pulse-dot" id="status-dot"></div>
+        <div class="brand-text">
+          <div class="brand-title"><span class="brand-title-text">🧠 Gemini Brain Cognitive NOC</span><span class="badge badge-cyan" style="font-size:10px; flex-shrink:0;">v${version}</span></div>
+          <div class="brand-sub" title="brain.${primaryDomain} • BrainMemoryDO + D1 Archive + Dual Vectorize">brain.${primaryDomain} • BrainMemoryDO + D1 Archive + Dual Vectorize</div>
+        </div>
+      </div>
+
+      <div class="kpi-strip" id="kpi-strip">
+        <div class="kpi-strip-track">
+          <div class="kpi-pill">
+            <span class="label">Active Memories</span>
+            <span class="val" id="kpi-memories">—</span>
+          </div>
+          <div class="kpi-pill">
+            <span class="label">Knowledge Graph</span>
+            <span class="val" id="kpi-graph">—</span>
+          </div>
+          <div class="kpi-pill">
+            <span class="label">Active ADRs</span>
+            <span class="val" id="kpi-adrs">—</span>
+          </div>
+          <div class="kpi-pill">
+            <span class="label">D1 Deep Archive</span>
+            <span class="val" id="kpi-d1">—</span>
+          </div>
+          <div class="kpi-pill" style="cursor: pointer;" onclick="switchTab('tab-sleep', document.querySelector('[data-tab=tab-sleep]'))">
+            <span class="label">Governance Conflicts</span>
+            <span class="val" id="kpi-conflicts">—</span>
+          </div>
+          <div class="kpi-pill">
+            <span class="label">Next 03:00 AM Sleep Cycle</span>
+            <span class="val" style="color: var(--cyan);" id="kpi-alarm-countdown">—</span>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div class="kpi-strip">
-      <div class="kpi-pill">
-        <span class="label">Active Memories</span>
-        <span class="val" id="kpi-memories">—</span>
-      </div>
-      <div class="kpi-pill">
-        <span class="label">Knowledge Graph</span>
-        <span class="val" id="kpi-graph">—</span>
-      </div>
-      <div class="kpi-pill">
-        <span class="label">Active ADRs</span>
-        <span class="val" id="kpi-adrs">—</span>
-      </div>
-      <div class="kpi-pill">
-        <span class="label">D1 Deep Archive</span>
-        <span class="val" id="kpi-d1">—</span>
-      </div>
-      <div class="kpi-pill" style="cursor: pointer;" onclick="switchTab('tab-sleep', document.querySelector('[data-tab=tab-sleep]'))">
-        <span class="label">Governance Conflicts</span>
-        <span class="val" id="kpi-conflicts">—</span>
-      </div>
-      <div class="kpi-pill">
-        <span class="label">Next 03:00 AM Sleep Cycle</span>
-        <span class="val" style="color: var(--cyan);" id="kpi-alarm-countdown">—</span>
-      </div>
-    </div>
-
-    <div style="display: flex; align-items: center; gap: 8px;">
+    <div class="header-actions">
       <button class="btn btn-sm btn-emerald" onclick="refreshDashboard()" id="btn-refresh">
         ↻ Refresh Telemetry
       </button>
@@ -859,7 +1018,15 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         <div class="panel">
           <div class="panel-header">
             <div class="panel-title">🖥️ Connected Client Surfaces</div>
-            <span class="badge badge-cyan" id="surfaces-count-badge">6 Surfaces</span>
+            <button
+              type="button"
+              class="badge badge-cyan surfaces-header-toggle"
+              id="surfaces-count-badge"
+              onclick="toggleSurfacesFold()"
+              aria-expanded="false"
+              aria-controls="surfaces-extra"
+              title="Toggle remaining connected client surfaces"
+            >6 Surfaces ▾</button>
           </div>
           <div class="panel-body" id="surfaces-container">
             <div style="color: var(--text-2); font-size: 12px;">Loading surface telemetry...</div>
@@ -1128,10 +1295,13 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
     // STATE & AUTHENTICATION (OPTION A: BROWSER SESSION AUTH)
     // =========================================================================
     const STORAGE_KEY = "gemini_brain_noc_bearer_token";
+    const VISIBLE_SURFACES_DEFAULT = 2;
     let SNAPSHOT = null;
     let EXPLORER_NS = "all";
     let EXPLORER_TYPE = "all";
     let SELECTED_NODE = null;
+    let SURFACES_EXPANDED = false;
+    let SURFACES_TOTAL_COUNT = 0;
 
     function normalizeToken(raw) {
       if (!raw) return "";
@@ -1309,21 +1479,37 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       }
     }
 
+    function setKpiValue(id, text, color) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = text;
+      if (color) el.style.color = color;
+      const pill = el.closest(".kpi-pill");
+      if (pill) {
+        const labelEl = pill.querySelector(".label");
+        const label = labelEl ? labelEl.textContent.trim() : "";
+        pill.title = label ? label + ": " + text : text;
+      }
+    }
+
     function renderTopKpis(data) {
       const t = data.telemetry;
-      document.getElementById("kpi-memories").textContent =
-        t.activeMemories.toLocaleString() + " (" + (t.totalTokensStored || 0).toLocaleString() + " tok)";
-      document.getElementById("kpi-graph").textContent =
-        t.activeEntities.toLocaleString() + " Nodes • " + t.activeEdges.toLocaleString() + " Edges";
-      document.getElementById("kpi-adrs").textContent = t.activeDecisions.toLocaleString();
-      document.getElementById("kpi-d1").textContent =
-        (t.d1ArchiveCount || 14422).toLocaleString() + " Docs";
+      setKpiValue(
+        "kpi-memories",
+        t.activeMemories.toLocaleString() + " (" + (t.totalTokensStored || 0).toLocaleString() + " tok)"
+      );
+      setKpiValue(
+        "kpi-graph",
+        t.activeEntities.toLocaleString() + " Nodes • " + t.activeEdges.toLocaleString() + " Edges"
+      );
+      setKpiValue("kpi-adrs", t.activeDecisions.toLocaleString());
+      setKpiValue("kpi-d1", (t.d1ArchiveCount || 14422).toLocaleString() + " Docs");
       const pendingConf = Number(t.pendingConflicts || 0);
-      const confEl = document.getElementById("kpi-conflicts");
-      if (confEl) {
-        confEl.textContent = pendingConf === 0 ? "0 Pending ✓" : pendingConf + " Pending ⚠️";
-        confEl.style.color = pendingConf === 0 ? "var(--emerald)" : "var(--amber)";
-      }
+      setKpiValue(
+        "kpi-conflicts",
+        pendingConf === 0 ? "0 Pending ✓" : pendingConf + " Pending ⚠️",
+        pendingConf === 0 ? "var(--emerald)" : "var(--amber)"
+      );
     }
 
     // Live countdown timer to 03:00 AM AST / 07:00 UTC
@@ -1335,8 +1521,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       const mins = Math.floor((diffMs % 3600000) / 60000);
       const secs = Math.floor((diffMs % 60000) / 1000);
       const pending = SNAPSHOT.telemetry.pendingEpisodicLogs || 0;
-      document.getElementById("kpi-alarm-countdown").textContent =
-        hrs + "h " + mins + "m " + secs + "s (" + pending + " queued)";
+      setKpiValue("kpi-alarm-countdown", hrs + "h " + mins + "m " + secs + "s (" + pending + " queued)");
     }, 1000);
 
     // =========================================================================
@@ -1458,10 +1643,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         }
       ];
 
-      document.getElementById("surfaces-count-badge").textContent = surfaceCards.length + " Surfaces";
-      document.getElementById("surfaces-container").innerHTML = surfaceCards
-        .map(
-          (s) => \`
+      const renderSurfaceCard = (s) => \`
           <div class="surface-card">
             <div class="surface-top">
               <span class="surface-name">\${escapeHtml(s.name)}</span>
@@ -1477,9 +1659,36 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
               <span>Last Activity: <strong>\${formatRelativeTime(s.lastTs)}</strong></span>
             </div>
           </div>
-        \`
-        )
-        .join("");
+        \`;
+
+      SURFACES_TOTAL_COUNT = surfaceCards.length;
+      const primarySurfaces = surfaceCards.slice(0, VISIBLE_SURFACES_DEFAULT);
+      const foldedSurfaces = surfaceCards.slice(VISIBLE_SURFACES_DEFAULT);
+
+      let surfacesHtml = \`<div class="surfaces-primary">\${primarySurfaces.map(renderSurfaceCard).join("")}</div>\`;
+      if (foldedSurfaces.length > 0) {
+        surfacesHtml += \`
+          <div class="surfaces-extra \${SURFACES_EXPANDED ? "expanded" : ""}" id="surfaces-extra" aria-hidden="\${SURFACES_EXPANDED ? "false" : "true"}">
+            <div class="surfaces-extra-inner">
+              \${foldedSurfaces.map(renderSurfaceCard).join("")}
+            </div>
+          </div>
+          <button
+            type="button"
+            class="surfaces-toggle-btn"
+            id="surfaces-toggle-btn"
+            onclick="toggleSurfacesFold()"
+            aria-expanded="\${SURFACES_EXPANDED ? "true" : "false"}"
+            aria-controls="surfaces-extra"
+          >
+            <span id="surfaces-toggle-label"></span>
+            <span class="surfaces-toggle-chevron">▾</span>
+          </button>
+        \`;
+      }
+
+      document.getElementById("surfaces-container").innerHTML = surfacesHtml;
+      syncSurfacesFoldUi();
 
       const dbs = data.databases || [];
       document.getElementById("databases-container").innerHTML = dbs
@@ -1500,6 +1709,44 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           \`;
         })
         .join("");
+    }
+
+    function syncSurfacesFoldUi() {
+      const total = SURFACES_TOTAL_COUNT;
+      const shown = Math.min(total, VISIBLE_SURFACES_DEFAULT);
+      const hiddenCount = Math.max(0, total - shown);
+      const extraEl = document.getElementById("surfaces-extra");
+      const toggleBtn = document.getElementById("surfaces-toggle-btn");
+      const toggleLabel = document.getElementById("surfaces-toggle-label");
+      const headerBadge = document.getElementById("surfaces-count-badge");
+
+      if (extraEl) {
+        extraEl.classList.toggle("expanded", SURFACES_EXPANDED);
+        extraEl.setAttribute("aria-hidden", SURFACES_EXPANDED ? "false" : "true");
+      }
+      if (toggleBtn) {
+        toggleBtn.setAttribute("aria-expanded", SURFACES_EXPANDED ? "true" : "false");
+      }
+      if (toggleLabel) {
+        toggleLabel.textContent = SURFACES_EXPANDED
+          ? "Hide " + hiddenCount + " extra surfaces (show top " + shown + ")"
+          : "Show " + hiddenCount + " more surfaces (" + shown + "/" + total + " shown)";
+      }
+      if (headerBadge) {
+        headerBadge.setAttribute("aria-expanded", SURFACES_EXPANDED ? "true" : "false");
+        headerBadge.textContent =
+          hiddenCount > 0
+            ? SURFACES_EXPANDED
+              ? total + " Surfaces ▴"
+              : shown + "/" + total + " Shown ▾"
+            : total + " Surfaces";
+      }
+    }
+
+    function toggleSurfacesFold() {
+      if (SURFACES_TOTAL_COUNT <= VISIBLE_SURFACES_DEFAULT) return;
+      SURFACES_EXPANDED = !SURFACES_EXPANDED;
+      syncSurfacesFoldUi();
     }
 
     // =========================================================================
