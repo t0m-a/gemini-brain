@@ -267,6 +267,28 @@ export interface ReindexMemoriesParams {
   limit?: number;
 }
 
+export interface TextReplacementRule {
+  pattern: string;
+  flags?: string;
+  replacement: string;
+}
+
+export interface ReplaceTextAcrossLayersParams {
+  rules: TextReplacementRule[];
+  dryRun?: boolean;
+  reindexVectors?: boolean;
+  includeSourceUri?: boolean;
+  maxSamplesPerTable?: number;
+}
+
+export interface TextReplaceSample {
+  table: string;
+  rowId: string;
+  column: string;
+  before: string;
+  after: string;
+}
+
 const FUNCTIONAL_RELATIONS = new Set([
   "ROUTES_TO",
   "RUNS_ON",
@@ -3759,6 +3781,718 @@ export class BrainMemoryDO extends DurableObject<Env> {
       ftsRebuilt: rebuildFts,
       reindexedVectors: vectors.length,
       memoryIds: rows.map((r) => r.id)
+    };
+  }
+
+  /**
+   * RPC Method 11B: Deep Cross-Layer Text Scan & Replace across ALL BrainMemoryDO SQLite tables,
+   * Knowledge Graph entities/edges (with FK-safe entity merge), FTS5 rebuild, and Vectorize re-embedding.
+   */
+  async replaceTextAcrossLayers(params: ReplaceTextAcrossLayersParams): Promise<{
+    ok: boolean;
+    dryRun: boolean;
+    tables: Record<string, { scanned: number; matchedRows: number; updatedRows: number }>;
+    modifiedMemoryIds: string[];
+    reindexedVectors: number;
+    ftsRebuilt: boolean;
+    samples: TextReplaceSample[];
+  }> {
+    if (!Array.isArray(params.rules) || params.rules.length === 0) {
+      throw new Error("replaceTextAcrossLayers requires at least one replacement rule.");
+    }
+
+    const compiledRules = params.rules.map((r) => {
+      if (!r || typeof r.pattern !== "string" || !r.pattern) {
+        throw new Error("Each replacement rule must have a non-empty 'pattern'.");
+      }
+      const rawFlags = typeof r.flags === "string" ? r.flags : "gi";
+      const flags = rawFlags.includes("g") ? rawFlags : `${rawFlags}g`;
+      return {
+        regex: new RegExp(r.pattern, flags),
+        replacement: typeof r.replacement === "string" ? r.replacement : ""
+      };
+    });
+
+    const dryRun = params.dryRun !== false;
+    const reindexVectors = params.reindexVectors !== false;
+    const includeSourceUri = params.includeSourceUri === true;
+    const maxSamplesPerTable = Math.max(5, Math.min(500, params.maxSamplesPerTable ?? 80));
+    const now = Math.floor(Date.now() / 1000);
+
+    const applyRules = (val: string | null | undefined): string | null => {
+      if (val === null || val === undefined) return null;
+      let out = val;
+      for (const rule of compiledRules) {
+        rule.regex.lastIndex = 0;
+        out = out.replace(rule.regex, rule.replacement);
+      }
+      return out;
+    };
+
+    const samples: TextReplaceSample[] = [];
+    const tableSampleCounts: Record<string, number> = {};
+    const recordSample = (
+      table: string,
+      rowId: string,
+      column: string,
+      before: string,
+      after: string
+    ) => {
+      const cnt = tableSampleCounts[table] ?? 0;
+      if (cnt >= maxSamplesPerTable) return;
+      // Extract compact context around first difference
+      let diffIdx = 0;
+      const minLen = Math.min(before.length, after.length);
+      while (diffIdx < minLen && before[diffIdx] === after[diffIdx]) diffIdx++;
+      const start = Math.max(0, diffIdx - 45);
+      const beforeSnip = before.slice(start, start + 180).replace(/\s+/g, " ");
+      const afterSnip = after.slice(start, start + 180).replace(/\s+/g, " ");
+      samples.push({ table, rowId, column, before: beforeSnip, after: afterSnip });
+      tableSampleCounts[table] = cnt + 1;
+    };
+
+    const tables: Record<string, { scanned: number; matchedRows: number; updatedRows: number }> = {
+      memories: { scanned: 0, matchedRows: 0, updatedRows: 0 },
+      entities: { scanned: 0, matchedRows: 0, updatedRows: 0 },
+      edges: { scanned: 0, matchedRows: 0, updatedRows: 0 },
+      decisions: { scanned: 0, matchedRows: 0, updatedRows: 0 },
+      episodic_logs: { scanned: 0, matchedRows: 0, updatedRows: 0 },
+      memory_mutations: { scanned: 0, matchedRows: 0, updatedRows: 0 },
+      consolidation_runs: { scanned: 0, matchedRows: 0, updatedRows: 0 },
+      memory_conflicts: { scanned: 0, matchedRows: 0, updatedRows: 0 },
+      outcomes: { scanned: 0, matchedRows: 0, updatedRows: 0 },
+      memory_validations: { scanned: 0, matchedRows: 0, updatedRows: 0 }
+    };
+
+    const modifiedActiveMemoryIds: string[] = [];
+    const modifiedAllMemoryIds: string[] = [];
+
+    const executePass = () => {
+      // 1. memories
+      const memRows = this.sql
+        .exec<{
+          id: string;
+          title: string;
+          content: string;
+          summary: string | null;
+          source_uri: string | null;
+          metadata_json: string | null;
+          superseded_by: string | null;
+        }>(
+          `SELECT id, title, content, summary, source_uri, metadata_json, superseded_by FROM memories`
+        )
+        .toArray();
+      tables.memories.scanned = memRows.length;
+      for (const row of memRows) {
+        const nextTitle = applyRules(row.title) ?? row.title;
+        const nextContent = applyRules(row.content) ?? row.content;
+        const nextSummary = applyRules(row.summary);
+        const nextSourceUri = includeSourceUri ? applyRules(row.source_uri) : row.source_uri;
+        const nextMeta = applyRules(row.metadata_json);
+
+        let changed = false;
+        if (nextTitle !== row.title) {
+          changed = true;
+          recordSample("memories", row.id, "title", row.title, nextTitle);
+        }
+        if (nextContent !== row.content) {
+          changed = true;
+          recordSample("memories", row.id, "content", row.content, nextContent);
+        }
+        if (nextSummary !== row.summary && row.summary !== null && nextSummary !== null) {
+          changed = true;
+          recordSample("memories", row.id, "summary", row.summary, nextSummary);
+        }
+        if (nextSourceUri !== row.source_uri && row.source_uri !== null && nextSourceUri !== null) {
+          changed = true;
+          recordSample("memories", row.id, "source_uri", row.source_uri, nextSourceUri);
+        }
+        if (nextMeta !== row.metadata_json && row.metadata_json !== null && nextMeta !== null) {
+          changed = true;
+          recordSample("memories", row.id, "metadata_json", row.metadata_json, nextMeta);
+        }
+
+        if (changed) {
+          tables.memories.matchedRows++;
+          modifiedAllMemoryIds.push(row.id);
+          if (row.superseded_by === null) {
+            modifiedActiveMemoryIds.push(row.id);
+          }
+          if (!dryRun) {
+            const nextTokens = estimateTokens(`${nextTitle}\n${nextContent}`);
+            this.sql.exec(
+              `UPDATE memories
+               SET title = ?1, content = ?2, summary = ?3, source_uri = ?4, metadata_json = ?5,
+                   token_count = ?6, updated_at = ?7
+               WHERE id = ?8`,
+              nextTitle,
+              nextContent,
+              nextSummary,
+              nextSourceUri,
+              nextMeta,
+              nextTokens,
+              now,
+              row.id
+            );
+            tables.memories.updatedRows++;
+          }
+        }
+      }
+
+      // 2. entities (+ FK-safe edges repoint/merge)
+      const entityRows = this.sql
+        .exec<{
+          entity_id: string;
+          namespace: string;
+          entity_type: string;
+          canonical_name: string;
+          description: string | null;
+          pagerank_score: number;
+          attributes_json: string | null;
+        }>(
+          `SELECT entity_id, namespace, entity_type, canonical_name, description, pagerank_score, attributes_json FROM entities`
+        )
+        .toArray();
+      tables.entities.scanned = entityRows.length;
+      const renamedEntities = new Map<string, string>();
+      for (const row of entityRows) {
+        if (isProtectedInfrastructure(row.entity_id)) continue;
+        const rawNextId = applyRules(row.entity_id) ?? row.entity_id;
+        const nextEntityId = rawNextId !== row.entity_id ? rawNextId.toLowerCase() : row.entity_id;
+        const nextName = applyRules(row.canonical_name) ?? row.canonical_name;
+        const nextDesc = applyRules(row.description);
+        const nextAttrs = applyRules(row.attributes_json);
+
+        let changed = false;
+        if (nextEntityId !== row.entity_id) {
+          changed = true;
+          recordSample("entities", row.entity_id, "entity_id", row.entity_id, nextEntityId);
+        }
+        if (nextName !== row.canonical_name) {
+          changed = true;
+          recordSample("entities", row.entity_id, "canonical_name", row.canonical_name, nextName);
+        }
+        if (nextDesc !== row.description && row.description !== null && nextDesc !== null) {
+          changed = true;
+          recordSample("entities", row.entity_id, "description", row.description, nextDesc);
+        }
+        if (nextAttrs !== row.attributes_json && row.attributes_json !== null && nextAttrs !== null) {
+          changed = true;
+          recordSample("entities", row.entity_id, "attributes_json", row.attributes_json, nextAttrs);
+        }
+
+        if (changed) {
+          tables.entities.matchedRows++;
+          if (nextEntityId !== row.entity_id) {
+            renamedEntities.set(row.entity_id, nextEntityId);
+          }
+          if (!dryRun) {
+            if (nextEntityId === row.entity_id) {
+              this.sql.exec(
+                `UPDATE entities
+                 SET canonical_name = ?1, description = ?2, attributes_json = ?3, updated_at = ?4
+                 WHERE entity_id = ?5`,
+                nextName,
+                nextDesc,
+                nextAttrs,
+                now,
+                row.entity_id
+              );
+            } else {
+              this.sql.exec(
+                `INSERT INTO entities (entity_id, namespace, entity_type, canonical_name, description, pagerank_score, attributes_json, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(entity_id) DO UPDATE SET
+                   pagerank_score = MAX(entities.pagerank_score, excluded.pagerank_score),
+                   updated_at = excluded.updated_at`,
+                nextEntityId,
+                row.namespace,
+                row.entity_type,
+                nextName,
+                nextDesc,
+                row.pagerank_score,
+                nextAttrs ?? "{}",
+                now
+              );
+            }
+            tables.entities.updatedRows++;
+          }
+        }
+      }
+
+      // 3. edges
+      const edgeRows = this.sql
+        .exec<{
+          edge_id: string;
+          namespace: string;
+          source_entity: string;
+          relation: string;
+          target_entity: string;
+          weight: number;
+          evidence_memory_id: string | null;
+          valid_from: number;
+          valid_until: number | null;
+        }>(
+          `SELECT edge_id, namespace, source_entity, relation, target_entity, weight, evidence_memory_id, valid_from, valid_until FROM edges`
+        )
+        .toArray();
+      tables.edges.scanned = edgeRows.length;
+      for (const row of edgeRows) {
+        const nextSource = renamedEntities.get(row.source_entity) ?? row.source_entity;
+        const nextTarget = renamedEntities.get(row.target_entity) ?? row.target_entity;
+        const nextRelation = applyRules(row.relation) ?? row.relation;
+        const nextEdgeId = `${nextSource}|${nextRelation}|${nextTarget}`;
+
+        if (
+          nextSource !== row.source_entity ||
+          nextTarget !== row.target_entity ||
+          nextRelation !== row.relation ||
+          nextEdgeId !== row.edge_id
+        ) {
+          tables.edges.matchedRows++;
+          recordSample("edges", row.edge_id, "edge_id", row.edge_id, nextEdgeId);
+          if (!dryRun) {
+            const existsTarget = this.sql
+              .exec<{ edge_id: string; valid_until: number | null }>(
+                `SELECT edge_id, valid_until FROM edges WHERE edge_id = ?1`,
+                nextEdgeId
+              )
+              .toArray()[0];
+            if (existsTarget && nextEdgeId !== row.edge_id) {
+              if (row.valid_until === null && existsTarget.valid_until !== null) {
+                this.sql.exec(
+                  `UPDATE edges SET valid_until = NULL WHERE edge_id = ?1`,
+                  nextEdgeId
+                );
+              }
+              this.sql.exec(`DELETE FROM edges WHERE edge_id = ?1`, row.edge_id);
+            } else {
+              this.sql.exec(
+                `UPDATE edges
+                 SET edge_id = ?1, source_entity = ?2, relation = ?3, target_entity = ?4
+                 WHERE edge_id = ?5`,
+                nextEdgeId,
+                nextSource,
+                nextRelation,
+                nextTarget,
+                row.edge_id
+              );
+            }
+            tables.edges.updatedRows++;
+          }
+        }
+      }
+
+      if (!dryRun && renamedEntities.size > 0) {
+        for (const oldId of renamedEntities.keys()) {
+          this.sql.exec(`DELETE FROM entities WHERE entity_id = ?1`, oldId);
+        }
+      }
+
+      // 4. decisions
+      const decRows = this.sql
+        .exec<{ decision_id: string; title: string; decision: string; rationale: string }>(
+          `SELECT decision_id, title, decision, rationale FROM decisions`
+        )
+        .toArray();
+      tables.decisions.scanned = decRows.length;
+      for (const row of decRows) {
+        const nextTitle = applyRules(row.title) ?? row.title;
+        const nextDec = applyRules(row.decision) ?? row.decision;
+        const nextRat = applyRules(row.rationale) ?? row.rationale;
+        if (nextTitle !== row.title || nextDec !== row.decision || nextRat !== row.rationale) {
+          tables.decisions.matchedRows++;
+          if (nextTitle !== row.title) recordSample("decisions", row.decision_id, "title", row.title, nextTitle);
+          if (nextDec !== row.decision) recordSample("decisions", row.decision_id, "decision", row.decision, nextDec);
+          if (nextRat !== row.rationale) recordSample("decisions", row.decision_id, "rationale", row.rationale, nextRat);
+          if (!dryRun) {
+            this.sql.exec(
+              `UPDATE decisions SET title = ?1, decision = ?2, rationale = ?3 WHERE decision_id = ?4`,
+              nextTitle,
+              nextDec,
+              nextRat,
+              row.decision_id
+            );
+            tables.decisions.updatedRows++;
+          }
+        }
+      }
+
+      // 5. episodic_logs
+      const epRows = this.sql
+        .exec<{ log_id: number; payload: string }>(`SELECT log_id, payload FROM episodic_logs`)
+        .toArray();
+      tables.episodic_logs.scanned = epRows.length;
+      for (const row of epRows) {
+        const nextPayload = applyRules(row.payload) ?? row.payload;
+        if (nextPayload !== row.payload) {
+          tables.episodic_logs.matchedRows++;
+          recordSample("episodic_logs", String(row.log_id), "payload", row.payload, nextPayload);
+          if (!dryRun) {
+            this.sql.exec(
+              `UPDATE episodic_logs SET payload = ?1 WHERE log_id = ?2`,
+              nextPayload,
+              row.log_id
+            );
+            tables.episodic_logs.updatedRows++;
+          }
+        }
+      }
+
+      // 6. memory_mutations
+      const mutRows = this.sql
+        .exec<{
+          mutation_id: number;
+          old_title: string | null;
+          old_content: string | null;
+          old_summary: string | null;
+          new_title: string | null;
+          new_content: string | null;
+          new_summary: string | null;
+          source_uri: string | null;
+        }>(
+          `SELECT mutation_id, old_title, old_content, old_summary, new_title, new_content, new_summary, source_uri FROM memory_mutations`
+        )
+        .toArray();
+      tables.memory_mutations.scanned = mutRows.length;
+      for (const row of mutRows) {
+        const nOldTitle = applyRules(row.old_title);
+        const nOldContent = applyRules(row.old_content);
+        const nOldSummary = applyRules(row.old_summary);
+        const nNewTitle = applyRules(row.new_title);
+        const nNewContent = applyRules(row.new_content);
+        const nNewSummary = applyRules(row.new_summary);
+        const nSrc = includeSourceUri ? applyRules(row.source_uri) : row.source_uri;
+
+        if (
+          nOldTitle !== row.old_title ||
+          nOldContent !== row.old_content ||
+          nOldSummary !== row.old_summary ||
+          nNewTitle !== row.new_title ||
+          nNewContent !== row.new_content ||
+          nNewSummary !== row.new_summary ||
+          nSrc !== row.source_uri
+        ) {
+          tables.memory_mutations.matchedRows++;
+          const rid = String(row.mutation_id);
+          if (nNewTitle !== row.new_title && row.new_title && nNewTitle) {
+            recordSample("memory_mutations", rid, "new_title", row.new_title, nNewTitle);
+          } else if (nNewContent !== row.new_content && row.new_content && nNewContent) {
+            recordSample("memory_mutations", rid, "new_content", row.new_content, nNewContent);
+          } else if (nOldContent !== row.old_content && row.old_content && nOldContent) {
+            recordSample("memory_mutations", rid, "old_content", row.old_content, nOldContent);
+          } else if (nOldTitle !== row.old_title && row.old_title && nOldTitle) {
+            recordSample("memory_mutations", rid, "old_title", row.old_title, nOldTitle);
+          }
+          if (!dryRun) {
+            this.sql.exec(
+              `UPDATE memory_mutations
+               SET old_title = ?1, old_content = ?2, old_summary = ?3,
+                   new_title = ?4, new_content = ?5, new_summary = ?6, source_uri = ?7
+               WHERE mutation_id = ?8`,
+              nOldTitle,
+              nOldContent,
+              nOldSummary,
+              nNewTitle,
+              nNewContent,
+              nNewSummary,
+              nSrc,
+              row.mutation_id
+            );
+            tables.memory_mutations.updatedRows++;
+          }
+        }
+      }
+
+      // 7. consolidation_runs
+      const consRows = this.sql
+        .exec<{ run_id: number; digest_title: string | null; digest_content: string | null }>(
+          `SELECT run_id, digest_title, digest_content FROM consolidation_runs`
+        )
+        .toArray();
+      tables.consolidation_runs.scanned = consRows.length;
+      for (const row of consRows) {
+        const nTitle = applyRules(row.digest_title);
+        const nContent = applyRules(row.digest_content);
+        if (nTitle !== row.digest_title || nContent !== row.digest_content) {
+          tables.consolidation_runs.matchedRows++;
+          const rid = String(row.run_id);
+          if (nTitle !== row.digest_title && row.digest_title && nTitle) {
+            recordSample("consolidation_runs", rid, "digest_title", row.digest_title, nTitle);
+          }
+          if (nContent !== row.digest_content && row.digest_content && nContent) {
+            recordSample("consolidation_runs", rid, "digest_content", row.digest_content, nContent);
+          }
+          if (!dryRun) {
+            this.sql.exec(
+              `UPDATE consolidation_runs SET digest_title = ?1, digest_content = ?2 WHERE run_id = ?3`,
+              nTitle,
+              nContent,
+              row.run_id
+            );
+            tables.consolidation_runs.updatedRows++;
+          }
+        }
+      }
+
+      // 8. memory_conflicts
+      const confRows = this.sql
+        .exec<{
+          conflict_id: number;
+          existing_title: string | null;
+          existing_snippet: string | null;
+          existing_edge_id: string | null;
+          new_title: string | null;
+          new_snippet: string | null;
+          new_edge_id: string | null;
+          reason: string;
+          merged_content_proposal: string | null;
+        }>(
+          `SELECT conflict_id, existing_title, existing_snippet, existing_edge_id, new_title, new_snippet, new_edge_id, reason, merged_content_proposal FROM memory_conflicts`
+        )
+        .toArray();
+      tables.memory_conflicts.scanned = confRows.length;
+      for (const row of confRows) {
+        const nExTitle = applyRules(row.existing_title);
+        const nExSnip = applyRules(row.existing_snippet);
+        const nExEdge = applyRules(row.existing_edge_id);
+        const nNewTitle = applyRules(row.new_title);
+        const nNewSnip = applyRules(row.new_snippet);
+        const nNewEdge = applyRules(row.new_edge_id);
+        const nReason = applyRules(row.reason) ?? row.reason;
+        const nMerged = applyRules(row.merged_content_proposal);
+        if (
+          nExTitle !== row.existing_title ||
+          nExSnip !== row.existing_snippet ||
+          nExEdge !== row.existing_edge_id ||
+          nNewTitle !== row.new_title ||
+          nNewSnip !== row.new_snippet ||
+          nNewEdge !== row.new_edge_id ||
+          nReason !== row.reason ||
+          nMerged !== row.merged_content_proposal
+        ) {
+          tables.memory_conflicts.matchedRows++;
+          recordSample("memory_conflicts", String(row.conflict_id), "reason", row.reason, nReason);
+          if (!dryRun) {
+            this.sql.exec(
+              `UPDATE memory_conflicts
+               SET existing_title = ?1, existing_snippet = ?2, existing_edge_id = ?3,
+                   new_title = ?4, new_snippet = ?5, new_edge_id = ?6,
+                   reason = ?7, merged_content_proposal = ?8
+               WHERE conflict_id = ?9`,
+              nExTitle,
+              nExSnip,
+              nExEdge,
+              nNewTitle,
+              nNewSnip,
+              nNewEdge,
+              nReason,
+              nMerged,
+              row.conflict_id
+            );
+            tables.memory_conflicts.updatedRows++;
+          }
+        }
+      }
+
+      // 9. outcomes
+      const outRows = this.sql
+        .exec<{
+          outcome_id: string;
+          query: string;
+          result_summary: string;
+          failed_attempts: string | null;
+          evidence_uri: string | null;
+        }>(
+          `SELECT outcome_id, query, result_summary, failed_attempts, evidence_uri FROM outcomes`
+        )
+        .toArray();
+      tables.outcomes.scanned = outRows.length;
+      for (const row of outRows) {
+        const nQuery = applyRules(row.query) ?? row.query;
+        const nSummary = applyRules(row.result_summary) ?? row.result_summary;
+        const nFailed = applyRules(row.failed_attempts);
+        const nEv = includeSourceUri ? applyRules(row.evidence_uri) : row.evidence_uri;
+        if (
+          nQuery !== row.query ||
+          nSummary !== row.result_summary ||
+          nFailed !== row.failed_attempts ||
+          nEv !== row.evidence_uri
+        ) {
+          tables.outcomes.matchedRows++;
+          recordSample("outcomes", row.outcome_id, "result_summary", row.result_summary, nSummary);
+          if (!dryRun) {
+            this.sql.exec(
+              `UPDATE outcomes SET query = ?1, result_summary = ?2, failed_attempts = ?3, evidence_uri = ?4 WHERE outcome_id = ?5`,
+              nQuery,
+              nSummary,
+              nFailed,
+              nEv,
+              row.outcome_id
+            );
+            tables.outcomes.updatedRows++;
+          }
+        }
+      }
+
+      // 10. memory_validations
+      const valRows = this.sql
+        .exec<{ validation_id: number; notes: string | null; evidence_uri: string | null }>(
+          `SELECT validation_id, notes, evidence_uri FROM memory_validations`
+        )
+        .toArray();
+      tables.memory_validations.scanned = valRows.length;
+      for (const row of valRows) {
+        const nNotes = applyRules(row.notes);
+        const nEv = includeSourceUri ? applyRules(row.evidence_uri) : row.evidence_uri;
+        if (nNotes !== row.notes || nEv !== row.evidence_uri) {
+          tables.memory_validations.matchedRows++;
+          if (nNotes !== row.notes && row.notes && nNotes) {
+            recordSample("memory_validations", String(row.validation_id), "notes", row.notes, nNotes);
+          }
+          if (!dryRun) {
+            this.sql.exec(
+              `UPDATE memory_validations SET notes = ?1, evidence_uri = ?2 WHERE validation_id = ?3`,
+              nNotes,
+              nEv,
+              row.validation_id
+            );
+            tables.memory_validations.updatedRows++;
+          }
+        }
+      }
+    };
+
+    let ftsRebuilt = false;
+    if (dryRun) {
+      executePass();
+    } else {
+      this.ctx.storage.transactionSync(() => {
+        executePass();
+        if (tables.memories.updatedRows > 0) {
+          this.sql.exec(`INSERT INTO memories_fts(memories_fts) VALUES('rebuild')`);
+          ftsRebuilt = true;
+        }
+      });
+    }
+
+    // Re-embed modified active memories into Vectorize (gemini-brain-bge-m3) in safe batches
+    let reindexedVectors = 0;
+    if (!dryRun && reindexVectors && modifiedActiveMemoryIds.length > 0) {
+      const BATCH_SIZE = 50;
+      for (let i = 0; i < modifiedActiveMemoryIds.length; i += BATCH_SIZE) {
+        const slice = modifiedActiveMemoryIds.slice(i, i + BATCH_SIZE);
+        const reidx = await this.reindexMemories({
+          memoryIds: slice,
+          rebuildFts: false
+        });
+        reindexedVectors += reidx.reindexedVectors;
+      }
+    }
+
+    return {
+      ok: true,
+      dryRun,
+      tables,
+      modifiedMemoryIds: modifiedAllMemoryIds,
+      reindexedVectors,
+      ftsRebuilt,
+      samples
+    };
+  }
+
+  /**
+   * RPC Method 11C: Targeted Administrative Purge of Specific Decisions, Knowledge Graph Entities,
+   * and Episodic Log Rows by exact ID (respects protected RPi5/Qdrant infrastructure guardrails).
+   */
+  async purgeRecords(params: {
+    decisionIds?: string[];
+    entityIds?: string[];
+    episodicLogIds?: number[];
+  }): Promise<{
+    ok: boolean;
+    deletedDecisions: number;
+    deletedEntities: number;
+    deletedEdges: number;
+    deletedEpisodicLogs: number;
+    skippedProtectedEntities: string[];
+  }> {
+    const decisionIds = Array.from(
+      new Set((params.decisionIds ?? []).map((id) => String(id).trim()).filter(Boolean))
+    );
+    const entityIds = Array.from(
+      new Set((params.entityIds ?? []).map((id) => String(id).trim()).filter(Boolean))
+    );
+    const episodicLogIds = Array.from(
+      new Set(
+        (params.episodicLogIds ?? [])
+          .map((n) => Number(n))
+          .filter((n) => Number.isInteger(n) && n > 0)
+      )
+    );
+
+    if (decisionIds.length === 0 && entityIds.length === 0 && episodicLogIds.length === 0) {
+      throw new Error("purgeRecords requires at least one decisionId, entityId, or episodicLogId.");
+    }
+
+    let deletedDecisions = 0;
+    let deletedEntities = 0;
+    let deletedEdges = 0;
+    let deletedEpisodicLogs = 0;
+    const skippedProtectedEntities: string[] = [];
+
+    this.ctx.storage.transactionSync(() => {
+      for (const did of decisionIds) {
+        const exists = this.sql
+          .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM decisions WHERE decision_id = ?1`, did)
+          .one().cnt;
+        if (exists > 0) {
+          this.sql.exec(`UPDATE decisions SET superseded_by = NULL WHERE superseded_by = ?1`, did);
+          this.sql.exec(`DELETE FROM decisions WHERE decision_id = ?1`, did);
+          deletedDecisions += exists;
+        }
+      }
+
+      for (const eid of entityIds) {
+        if (isProtectedInfrastructure(eid)) {
+          skippedProtectedEntities.push(eid);
+          continue;
+        }
+        const exists = this.sql
+          .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM entities WHERE entity_id = ?1`, eid)
+          .one().cnt;
+        if (exists > 0) {
+          const edgeCnt = this.sql
+            .exec<{ cnt: number }>(
+              `SELECT COUNT(*) AS cnt FROM edges WHERE source_entity = ?1 OR target_entity = ?1`,
+              eid
+            )
+            .one().cnt;
+          this.sql.exec(`DELETE FROM edges WHERE source_entity = ?1 OR target_entity = ?1`, eid);
+          this.sql.exec(`DELETE FROM entities WHERE entity_id = ?1`, eid);
+          deletedEntities += exists;
+          deletedEdges += edgeCnt;
+        }
+      }
+
+      for (const lid of episodicLogIds) {
+        const exists = this.sql
+          .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM episodic_logs WHERE log_id = ?1`, lid)
+          .one().cnt;
+        if (exists > 0) {
+          this.sql.exec(`DELETE FROM episodic_logs WHERE log_id = ?1`, lid);
+          deletedEpisodicLogs += exists;
+        }
+      }
+    });
+
+    return {
+      ok: true,
+      deletedDecisions,
+      deletedEntities,
+      deletedEdges,
+      deletedEpisodicLogs,
+      skippedProtectedEntities
     };
   }
 

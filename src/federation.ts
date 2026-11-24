@@ -966,3 +966,109 @@ export async function ingestKbArchiveBatch(
     ids: items.map((i) => i.id)
   };
 }
+
+/**
+ * Re-embeds and upserts specific KB Vectorize records (archive-kb-index, 768-dim @cf/baai/bge-base-en-v1.5)
+ * directly from the current D1 kb_fts / files rows while preserving exact canonical vector IDs
+ * ('file:<id>' for files rows, or exact ref_id for takeout/archive records).
+ */
+export async function reindexKbVectors(
+  env: Env,
+  vectorIds: string[]
+): Promise<{
+  ok: boolean;
+  requested: number;
+  reindexedVectors: number;
+  ids: string[];
+}> {
+  const uniqueIds = Array.from(
+    new Set((vectorIds || []).map((id) => String(id || "").trim()).filter(Boolean))
+  ).slice(0, 64);
+
+  if (uniqueIds.length === 0 || !env.KB_DB || !env.KB_VECTORIZE || !env.AI) {
+    return { ok: true, requested: uniqueIds.length, reindexedVectors: 0, ids: [] };
+  }
+
+  const refIds = uniqueIds.map((vid) => (vid.startsWith("file:") ? vid.slice(5) : vid));
+  const placeholders = refIds.map((_, i) => `?${i + 1}`).join(", ");
+  const ftsRes = await env.KB_DB.prepare(
+    `SELECT source_type, ref_id, rel_path, title, primary_theme, sub_themes, client_code, organization_name, tickets, content
+     FROM kb_fts
+     WHERE ref_id IN (${placeholders})`
+  )
+    .bind(...refIds)
+    .all<{
+      source_type: string;
+      ref_id: string;
+      rel_path: string;
+      title: string;
+      primary_theme: string;
+      sub_themes: string;
+      client_code: string;
+      organization_name: string;
+      tickets: string;
+      content: string;
+    }>();
+
+  const byRefId = new Map<string, (typeof ftsRes.results)[number]>();
+  for (const row of ftsRes.results ?? []) {
+    if (row.ref_id && !byRefId.has(row.ref_id)) {
+      byRefId.set(row.ref_id, row);
+    }
+  }
+
+  const targets: Array<{ vectorId: string; row: (typeof ftsRes.results)[number] }> = [];
+  for (const vid of uniqueIds) {
+    const rid = vid.startsWith("file:") ? vid.slice(5) : vid;
+    const row = byRefId.get(rid);
+    if (row) targets.push({ vectorId: vid, row });
+  }
+
+  if (targets.length === 0) {
+    return { ok: true, requested: uniqueIds.length, reindexedVectors: 0, ids: [] };
+  }
+
+  const kbEmbeddingModel =
+    (env.KB_EMBEDDING_MODEL as "@cf/baai/bge-base-en-v1.5") ||
+    "@cf/baai/bge-base-en-v1.5";
+
+  const texts = targets.map(
+    ({ row }) => `${row.title}\nTheme: ${row.primary_theme}\n${(row.content || "").slice(0, 3200)}`
+  );
+  const embRes = (await env.AI.run(kbEmbeddingModel, { text: texts })) as {
+    data?: number[][];
+  };
+
+  const vectorRecords: VectorizeVector[] = [];
+  targets.forEach(({ vectorId, row }, idx) => {
+    const values = embRes.data?.[idx];
+    if (values && values.length === 768) {
+      vectorRecords.push({
+        id: vectorId.slice(0, 64),
+        values,
+        metadata: {
+          rel_path: row.rel_path || "",
+          title: (row.title || "").slice(0, 500),
+          primary_theme: row.primary_theme || "",
+          sub_themes: row.sub_themes || "[]",
+          client_code: row.client_code || "",
+          organization_name: row.organization_name || "",
+          source_type: row.source_type || "document",
+          tickets: row.tickets || "",
+          preview: (row.content || "").slice(0, 260).replace(/\s+/g, " ").trim()
+        }
+      });
+    }
+  });
+
+  if (vectorRecords.length > 0) {
+    await env.KB_VECTORIZE.upsert(vectorRecords);
+  }
+
+  return {
+    ok: true,
+    requested: uniqueIds.length,
+    reindexedVectors: vectorRecords.length,
+    ids: vectorRecords.map((v) => v.id)
+  };
+}

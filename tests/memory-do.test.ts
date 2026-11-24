@@ -909,4 +909,144 @@ describe("BrainMemoryDO SQLite, FTS5, Governance, Guardrails & Rollback invarian
       .map((r) => r.client_id);
     expect(remainingClients).toEqual(["gemini-web-oauth-diag", "antigravity-win11"]);
   });
+
+  it("scans and replaces text across memories, KG entities/edges, decisions, episodic logs, and reindexes vectors", async () => {
+    const state = createMockDurableObjectState();
+    const { env, vectorIndex } = createMockEnv();
+    const brain = new BrainMemoryDO(state as unknown as DurableObjectState, env);
+    await state.waitUntilReady();
+
+    await brain.rememberFact({
+      id: "mem-rename-1",
+      namespace: "minkalab.net",
+      title: "MinkaLab / AyniLab / PulpoLab Architecture",
+      content: "Originally known as La Paz Open Lab Project and PulpoLab.",
+      triples: [
+        {
+          subjectId: "doc:arch",
+          subjectName: "Architecture Doc",
+          relation: "LINKS_TO",
+          objectId: "concept:pulpolab",
+          objectName: "PulpoLab"
+        },
+        {
+          subjectId: "doc:arch",
+          subjectName: "Architecture Doc",
+          relation: "LINKS_TO",
+          objectId: "concept:minkalab",
+          objectName: "MinkaLab"
+        }
+      ]
+    });
+
+    await brain.logDecision({
+      namespace: "minkalab.net",
+      title: "Rename PulpoLab",
+      decision: "Use MinkaLab instead of PulpoLab.",
+      rationale: "Canonical project name."
+    });
+
+    await brain.logEpisodicEvent({
+      sessionId: "sess-rename",
+      clientId: "antigravity-win11",
+      eventType: "checkpoint",
+      payload: "Reviewed AyniLab and LPOLP notes."
+    });
+
+    const rules = [
+      { pattern: "MinkaLab\\s*/\\s*AyniLab\\s*/\\s*PulpoLab", flags: "gi", replacement: "MinkaLab" },
+      { pattern: "La\\s+Paz\\s+Open\\s+Lab\\s+Project", flags: "gi", replacement: "MinkaLab" },
+      { pattern: "\\b(?:AyniLab|PulpoLab|LPOLP)\\b", flags: "gi", replacement: "MinkaLab" }
+    ];
+
+    // 1. Dry run reports matches without mutating state
+    const dry = await brain.replaceTextAcrossLayers({ rules, dryRun: true });
+    expect(dry.ok).toBe(true);
+    expect(dry.dryRun).toBe(true);
+    expect(dry.tables.memories.matchedRows).toBe(1);
+    expect(dry.tables.memories.updatedRows).toBe(0);
+    expect(dry.tables.entities.matchedRows).toBe(1);
+    expect(dry.tables.edges.matchedRows).toBe(1);
+    expect(dry.tables.decisions.matchedRows).toBe(1);
+    expect(dry.tables.episodic_logs.matchedRows).toBe(1);
+    expect(dry.reindexedVectors).toBe(0);
+
+    // 2. Live execution updates all layers, merges concept:pulpolab -> concept:minkalab, and reindexes Vectorize
+    const applied = await brain.replaceTextAcrossLayers({ rules, dryRun: false });
+    expect(applied.ok).toBe(true);
+    expect(applied.dryRun).toBe(false);
+    expect(applied.tables.memories.updatedRows).toBe(1);
+    expect(applied.tables.entities.updatedRows).toBe(1);
+    expect(applied.tables.edges.updatedRows).toBe(1);
+    expect(applied.tables.decisions.updatedRows).toBe(1);
+    expect(applied.tables.episodic_logs.updatedRows).toBe(1);
+    expect(applied.ftsRebuilt).toBe(true);
+    expect(applied.reindexedVectors).toBe(1);
+
+    const updatedMem = state.sql
+      .exec<{ title: string; content: string }>(`SELECT title, content FROM memories WHERE id = 'mem-rename-1'`)
+      .one();
+    expect(updatedMem.title).toBe("MinkaLab Architecture");
+    expect(updatedMem.content).toBe("Originally known as MinkaLab and MinkaLab.");
+
+    const oldEntityCount = state.sql
+      .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM entities WHERE entity_id = 'concept:pulpolab'`)
+      .one().cnt;
+    expect(oldEntityCount).toBe(0);
+
+    const mergedEdges = state.sql
+      .exec<{ edge_id: string }>(`SELECT edge_id FROM edges WHERE source_entity = 'doc:arch'`)
+      .toArray()
+      .map((e) => e.edge_id);
+    expect(mergedEdges).toEqual(["doc:arch|LINKS_TO|concept:minkalab"]);
+
+    expect(vectorIndex.vectors.get("mem-rename-1")?.metadata?.title).toBe("MinkaLab Architecture");
+  });
+
+  it("purges targeted decisions, non-protected KG entities/edges, and episodic logs while protecting rpi5", async () => {
+    const state = createMockDurableObjectState();
+    const { env } = createMockEnv();
+    const brain = new BrainMemoryDO(state as unknown as DurableObjectState, env);
+    await state.waitUntilReady();
+
+    const dec = await brain.logDecision({
+      namespace: "homelab",
+      title: "Dropped Project ADR",
+      decision: "Temporary test decision",
+      rationale: "Testing purgeRecords"
+    });
+    await brain.rememberFact({
+      id: "mem-purge-test",
+      namespace: "homelab",
+      title: "Temp Entity",
+      content: "Temp entity link",
+      triples: [
+        {
+          subjectId: "service:dropped-worker",
+          subjectName: "Dropped Worker",
+          relation: "STORES_IN",
+          objectId: "node:rpi5",
+          objectName: "Raspberry Pi 5"
+        }
+      ]
+    });
+    const ep = await brain.logEpisodicEvent({
+      sessionId: "sess-purge",
+      clientId: "antigravity-win11",
+      eventType: "checkpoint",
+      payload: "Dropped project checkpoint"
+    });
+
+    const res = await brain.purgeRecords({
+      decisionIds: [dec.decisionId],
+      entityIds: ["service:dropped-worker", "node:rpi5"],
+      episodicLogIds: [ep.logId]
+    });
+    expect(res.ok).toBe(true);
+    expect(res.deletedDecisions).toBe(1);
+    expect(res.deletedEntities).toBe(1);
+    expect(res.deletedEdges).toBe(1);
+    expect(res.deletedEpisodicLogs).toBe(1);
+    expect(res.skippedProtectedEntities).toEqual(["node:rpi5"]);
+  });
 });

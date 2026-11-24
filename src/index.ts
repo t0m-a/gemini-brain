@@ -13,6 +13,7 @@ import { BrainMemoryDO, type Env } from "./memory-do";
 import {
   KbFederationService,
   ingestKbArchiveBatch,
+  reindexKbVectors,
   type KbArchiveIngestItem
 } from "./federation";
 import { renderDashboardHtml } from "./dashboard";
@@ -1873,6 +1874,38 @@ export default {
       }
     }
 
+    if (request.method === "POST" && url.pathname === "/audit/text-replace") {
+      try {
+        const body = (await request.json().catch(() => ({}))) as Parameters<
+          BrainMemoryDO["replaceTextAcrossLayers"]
+        >[0];
+        const result = await getBrainStub().replaceTextAcrossLayers(body);
+        return Response.json(result, { status: 200, headers: corsHeaders });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const status = /requires at least one|non-empty|Invalid regular expression/i.test(message)
+          ? 400
+          : 500;
+        console.error("[audit/text-replace] failed:", message);
+        return Response.json({ ok: false, error: message }, { status, headers: corsHeaders });
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/audit/purge-records") {
+      try {
+        const body = (await request.json().catch(() => ({}))) as Parameters<
+          BrainMemoryDO["purgeRecords"]
+        >[0];
+        const result = await getBrainStub().purgeRecords(body);
+        return Response.json(result, { status: 200, headers: corsHeaders });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const status = /requires at least one/i.test(message) ? 400 : 500;
+        console.error("[audit/purge-records] failed:", message);
+        return Response.json({ ok: false, error: message }, { status, headers: corsHeaders });
+      }
+    }
+
     if (request.method === "POST" && url.pathname === "/audit/consolidate") {
       const body = (await request.json().catch(() => ({}))) as { triggerSource?: string };
       const result = await getBrainStub().runConsolidationNow(
@@ -1975,6 +2008,18 @@ export default {
       const body = (await request.json()) as { items: KbArchiveIngestItem[] };
       const result = await ingestKbArchiveBatch(env, body.items ?? []);
       return Response.json(result);
+    }
+
+    if (request.method === "POST" && url.pathname === "/audit/kb-reindex") {
+      try {
+        const body = (await request.json().catch(() => ({}))) as { vectorIds?: string[] };
+        const result = await reindexKbVectors(env, body.vectorIds ?? []);
+        return Response.json(result, { status: 200, headers: corsHeaders });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[audit/kb-reindex] failed:", message);
+        return Response.json({ ok: false, error: message }, { status: 500, headers: corsHeaders });
+      }
     }
 
     if (request.method === "DELETE" && url.pathname === "/mcp") {
