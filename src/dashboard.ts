@@ -1575,6 +1575,10 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       });
 
       const rpiPreserved = data.surfaces.rpi5Preserved || { preservedEntities: 0, preservedActiveEdges: 0 };
+      const latestConsolidationTs = ((data.sleepCycle && data.sleepCycle.consolidationRuns) || []).reduce(
+        (maxTs, r) => Math.max(maxTs, Number(r && r.created_at) || 0),
+        0
+      );
 
       const surfaceCards = [
         {
@@ -1629,7 +1633,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           desc: "Cloudflare Durable Object alarm() consolidating episodic logs & PageRank.",
           muts: sleepStats.muts,
           epis: (data.sleepCycle.consolidationRuns || []).length,
-          lastTs: sleepStats.lastTs
+          lastTs: Math.max(sleepStats.lastTs || 0, latestConsolidationTs)
         },
         {
           name: "⌨️ Gemini CLI Terminal (Win11)",
@@ -1641,7 +1645,15 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           epis: cliStats.epis,
           lastTs: cliStats.lastTs
         }
-      ];
+      ]
+        .map((card, idx) => Object.assign({ _order: idx }, card))
+        .sort((a, b) => {
+          const tsDiff = (Number(b.lastTs) || 0) - (Number(a.lastTs) || 0);
+          if (tsDiff !== 0) return tsDiff;
+          const actDiff = (b.muts + b.epis) - (a.muts + a.epis);
+          if (actDiff !== 0) return actDiff;
+          return a._order - b._order;
+        });
 
       const renderSurfaceCard = (s) => \`
           <div class="surface-card">
@@ -1690,7 +1702,13 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       document.getElementById("surfaces-container").innerHTML = surfacesHtml;
       syncSurfacesFoldUi();
 
-      const dbs = data.databases || [];
+      const dbs = (data.databases || [])
+        .map((db, idx) => Object.assign({ _order: idx }, db))
+        .sort((a, b) => {
+          const tsDiff = (Number(b.lastActivityAt) || 0) - (Number(a.lastActivityAt) || 0);
+          if (tsDiff !== 0) return tsDiff;
+          return a._order - b._order;
+        });
       document.getElementById("databases-container").innerHTML = dbs
         .map((db) => {
           const isOffline = db.status.includes("OFFLINE");
@@ -1705,6 +1723,9 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
                 \${escapeHtml(db.engine)}
               </div>
               <div style="font-size: 11.5px; color: var(--text-2);">\${escapeHtml(db.details)}</div>
+              <div class="surface-meta">
+                <span>Last Activity: <strong>\${formatRelativeTime(db.lastActivityAt)}</strong></span>
+              </div>
             </div>
           \`;
         })
@@ -1729,8 +1750,8 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       }
       if (toggleLabel) {
         toggleLabel.textContent = SURFACES_EXPANDED
-          ? "Hide " + hiddenCount + " extra surfaces (show top " + shown + ")"
-          : "Show " + hiddenCount + " more surfaces (" + shown + "/" + total + " shown)";
+          ? "Hide " + hiddenCount + " surfaces (show last " + shown + " active)"
+          : "Show " + hiddenCount + " more surfaces (last " + shown + " active shown)";
       }
       if (headerBadge) {
         headerBadge.setAttribute("aria-expanded", SURFACES_EXPANDED ? "true" : "false");
@@ -1738,7 +1759,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           hiddenCount > 0
             ? SURFACES_EXPANDED
               ? total + " Surfaces ▴"
-              : shown + "/" + total + " Shown ▾"
+              : shown + "/" + total + " Active ▾"
             : total + " Surfaces";
       }
     }

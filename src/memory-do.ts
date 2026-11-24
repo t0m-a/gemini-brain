@@ -11,6 +11,7 @@ import {
   buildSafeFts5Query,
   estimateTokens,
   fuseBrainAndKb,
+  parseIsoToMs,
   queryKbArchive,
   type RankedCandidate,
   type ScoreExplanation
@@ -4697,21 +4698,131 @@ export class BrainMemoryDO extends DurableObject<Env> {
       )
       .one();
 
-    // 6. D1 Archive Knowledge DB Live Record Count
+    // 6. D1 Archive Knowledge DB Live Record Count + Federated Database Activity Timestamps
+    const normalizeTimestampSec = (raw: unknown): number => {
+      if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+        return raw > 1e12 ? Math.floor(raw / 1000) : Math.floor(raw);
+      }
+      if (typeof raw === "string" && raw.trim()) {
+        const asNum = Number(raw.trim());
+        if (Number.isFinite(asNum) && asNum > 0) {
+          return asNum > 1e12 ? Math.floor(asNum / 1000) : Math.floor(asNum);
+        }
+        const parsedMs = parseIsoToMs(raw);
+        if (parsedMs && parsedMs > 0) {
+          return Math.floor(parsedMs / 1000);
+        }
+      }
+      return 0;
+    };
+
+    const doSqliteActivityRow = this.sql
+      .exec<{ last_ts: number }>(
+        `SELECT MAX(
+           COALESCE((SELECT MAX(updated_at) FROM memories), 0),
+           COALESCE((SELECT MAX(last_accessed_at) FROM memories), 0),
+           COALESCE((SELECT MAX(updated_at) FROM entities), 0),
+           COALESCE((SELECT MAX(valid_from) FROM edges), 0),
+           COALESCE((SELECT MAX(created_at) FROM decisions), 0),
+           COALESCE((SELECT MAX(created_at) FROM episodic_logs), 0),
+           COALESCE((SELECT MAX(created_at) FROM memory_mutations), 0),
+           COALESCE((SELECT MAX(created_at) FROM consolidation_runs), 0),
+           COALESCE((SELECT MAX(created_at) FROM outcomes), 0),
+           COALESCE((SELECT MAX(created_at) FROM memory_validations), 0)
+         ) AS last_ts`
+      )
+      .one();
+
+    const brainVecSqlActivityRow = this.sql
+      .exec<{ last_ts: number }>(
+        `SELECT MAX(
+           COALESCE((SELECT MAX(updated_at) FROM memories WHERE superseded_by IS NULL), 0),
+           COALESCE((SELECT MAX(last_accessed_at) FROM memories WHERE superseded_by IS NULL), 0),
+           COALESCE((SELECT MAX(created_at) FROM memory_mutations), 0)
+         ) AS last_ts`
+      )
+      .one();
+
+    const rpi5ActivityRow = this.sql
+      .exec<{ last_ts: number }>(
+        `SELECT MAX(
+           COALESCE((SELECT MAX(created_at) FROM memory_mutations
+             WHERE (LOWER(client_id) LIKE '%rpi5%' OR LOWER(client_id) LIKE '%qdrant%' OR LOWER(source_uri) LIKE 'rpi5://%' OR LOWER(source_uri) LIKE 'qdrant://%')
+               AND LOWER(client_id) NOT LIKE '%cli%'), 0),
+           COALESCE((SELECT MAX(created_at) FROM episodic_logs
+             WHERE (LOWER(client_id) LIKE '%rpi5%' OR LOWER(client_id) LIKE '%qdrant%')
+               AND LOWER(client_id) NOT LIKE '%cli%'), 0),
+           COALESCE((SELECT MAX(updated_at) FROM memories
+             WHERE LOWER(source_uri) LIKE 'rpi5://%' OR LOWER(source_uri) LIKE 'qdrant://%'), 0),
+           COALESCE((SELECT MAX(updated_at) FROM entities
+             WHERE LOWER(entity_id) LIKE '%rpi5%' OR LOWER(entity_id) LIKE '%qdrant%'), 0),
+           COALESCE((SELECT MAX(valid_from) FROM edges
+             WHERE valid_until IS NULL
+               AND (LOWER(source_entity) LIKE '%rpi5%' OR LOWER(target_entity) LIKE '%rpi5%' OR LOWER(source_entity) LIKE '%qdrant%' OR LOWER(target_entity) LIKE '%qdrant%')), 0)
+         ) AS last_ts`
+      )
+      .one();
+
     let d1ArchiveCount = 14422;
     let d1Status = "ONLINE_FEDERATED";
+    let d1LastActivityAt = 0;
+    let brainVecDescribeTs = 0;
+    let kbVecDescribeTs = 0;
+
+    const [d1CountRes, d1ActivityRes, brainVecDescRes, kbVecDescRes] = await Promise.allSettled([
+      this.env.KB_DB
+        ? this.env.KB_DB.prepare(`SELECT COUNT(*) AS count FROM kb_fts`).first<{ count: number }>()
+        : Promise.resolve(null),
+      this.env.KB_DB
+        ? this.env.KB_DB.prepare(
+            `SELECT MAX(last_updated) AS latest_updated, MAX(modified_iso) AS latest_modified FROM files`
+          ).first<{ latest_updated: string | null; latest_modified: string | null }>()
+        : Promise.resolve(null),
+      typeof this.env.VECTOR_INDEX?.describe === "function"
+        ? this.env.VECTOR_INDEX.describe()
+        : Promise.resolve(null),
+      typeof this.env.KB_VECTORIZE?.describe === "function"
+        ? this.env.KB_VECTORIZE.describe()
+        : Promise.resolve(null)
+    ]);
+
     if (this.env.KB_DB) {
-      try {
-        const d1Row = await this.env.KB_DB.prepare(
-          `SELECT COUNT(*) AS count FROM kb_fts`
-        ).first<{ count: number }>();
-        if (d1Row && typeof d1Row.count === "number" && d1Row.count > 0) {
-          d1ArchiveCount = d1Row.count;
-        }
-      } catch {
+      if (
+        d1CountRes.status === "fulfilled" &&
+        d1CountRes.value &&
+        typeof d1CountRes.value.count === "number" &&
+        d1CountRes.value.count > 0
+      ) {
+        d1ArchiveCount = d1CountRes.value.count;
+      } else if (d1CountRes.status === "rejected") {
         d1Status = "FALLBACK_CACHED";
       }
+      if (d1ActivityRes.status === "fulfilled" && d1ActivityRes.value) {
+        d1LastActivityAt = Math.max(
+          normalizeTimestampSec(d1ActivityRes.value.latest_updated),
+          normalizeTimestampSec(d1ActivityRes.value.latest_modified)
+        );
+      }
     }
+
+    if (brainVecDescRes.status === "fulfilled" && brainVecDescRes.value) {
+      brainVecDescribeTs = normalizeTimestampSec(
+        (brainVecDescRes.value as { processedUpToDatetime?: unknown }).processedUpToDatetime
+      );
+    }
+    if (kbVecDescRes.status === "fulfilled" && kbVecDescRes.value) {
+      kbVecDescribeTs = normalizeTimestampSec(
+        (kbVecDescRes.value as { processedUpToDatetime?: unknown }).processedUpToDatetime
+      );
+    }
+
+    const doSqliteLastActivityAt = normalizeTimestampSec(doSqliteActivityRow?.last_ts);
+    const brainVecLastActivityAt = Math.max(
+      brainVecDescribeTs,
+      normalizeTimestampSec(brainVecSqlActivityRow?.last_ts)
+    );
+    const kbVecLastActivityAt = kbVecDescribeTs > 0 ? kbVecDescribeTs : d1LastActivityAt;
+    const rpi5LastActivityAt = normalizeTimestampSec(rpi5ActivityRow?.last_ts);
 
     // 7. Active Decisions, Pending Episodic Logs, Consolidation Runs & Recent Mutations
     const activeDecisionsList = this.sql
@@ -4833,6 +4944,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
           role: "Tier-1 Active Semantic, Procedural, Episodic & Property Graph Store",
           status: "ONLINE",
           records: stats.activeMemories + stats.activeEntities + stats.activeEdges + stats.activeDecisions,
+          lastActivityAt: doSqliteLastActivityAt,
           details: `${stats.activeMemories} Memories • ${stats.activeEntities} Entities • ${stats.activeEdges} Edges • ${stats.activeDecisions} ADRs • ${stats.pendingConflicts} Pending Conflicts`
         },
         {
@@ -4842,6 +4954,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
           role: "Dense Multilingual Semantic Embeddings (@cf/baai/bge-m3)",
           status: "ONLINE",
           records: stats.activeMemories,
+          lastActivityAt: brainVecLastActivityAt,
           details: `${stats.activeMemories} Active 1024-dim Vectors • Cross-Encoder Reranker (@cf/baai/bge-reranker-base)`
         },
         {
@@ -4851,6 +4964,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
           role: "Tier-2 Deep Historical Archive (kb.tsimon.me)",
           status: d1Status,
           records: d1ArchiveCount,
+          lastActivityAt: d1LastActivityAt,
           details: `${d1ArchiveCount.toLocaleString()} Indexed Documents, Emails, Spreadsheets & CMDB Records`
         },
         {
@@ -4860,6 +4974,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
           role: "Historical Archive Semantic Vectors (@cf/baai/bge-base-en-v1.5)",
           status: "ONLINE",
           records: d1ArchiveCount,
+          lastActivityAt: kbVecLastActivityAt,
           details: `Hydrated on-the-fly against D1 kb_fts via canonical rel_path (ADR-04)`
         },
         {
@@ -4869,9 +4984,10 @@ export class BrainMemoryDO extends DurableObject<Env> {
           role: "Tier-3 Local Edge Vault (node:rpi5)",
           status: "ONLINE_FEDERATED",
           records: rpi5GraphStats.entities_count + rpi5GraphStats.edges_count,
+          lastActivityAt: rpi5LastActivityAt,
           details: `RPI_SYNC_ENABLED=true • ${rpi5GraphStats.entities_count} Graph Nodes & ${rpi5GraphStats.edges_count} Active Edges Linked (valid_until = NULL)`
         }
-      ],
+      ].sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0)),
       sleepCycle: {
         nextAlarmIso: stats.nextAlarmIso,
         pendingCount: stats.pendingEpisodicLogs,

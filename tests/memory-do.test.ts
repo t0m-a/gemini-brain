@@ -1049,4 +1049,75 @@ describe("BrainMemoryDO SQLite, FTS5, Governance, Guardrails & Rollback invarian
     expect(res.deletedEpisodicLogs).toBe(1);
     expect(res.skippedProtectedEntities).toEqual(["node:rpi5"]);
   });
+
+  it("populates lastActivityAt and sorts Federated Databases & Indexes from most recently active to oldest in getDashboardSnapshot", async () => {
+    const state = createMockDurableObjectState();
+    const { env } = createMockEnv();
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const kbVecTsIso = new Date((nowSec - 120) * 1000).toISOString();
+    const d1TsIso = new Date((nowSec - 1800) * 1000).toISOString();
+    const brainVecTsMs = (nowSec - 600) * 1000;
+
+    (env as unknown as Record<string, unknown>).KB_DB = {
+      prepare(sql: string) {
+        return {
+          async first() {
+            if (sql.includes("COUNT(*)")) return { count: 14500 };
+            if (sql.includes("MAX(last_updated)")) {
+              return { latest_updated: d1TsIso, latest_modified: "2026-01-01T00:00:00Z" };
+            }
+            return null;
+          }
+        };
+      }
+    };
+    (env.VECTOR_INDEX as unknown as { describe?: () => Promise<unknown> }).describe = async () => ({
+      processedUpToDatetime: brainVecTsMs
+    });
+    (env.KB_VECTORIZE as unknown as { describe?: () => Promise<unknown> }).describe = async () => ({
+      processedUpToDatetime: kbVecTsIso
+    });
+
+    const brain = new BrainMemoryDO(state as unknown as DurableObjectState, env);
+    await state.waitUntilReady();
+
+    // Seed an older memory (1h ago) and an older RPi5 entity (2h ago), plus a recent episodic checkpoint (10s ago)
+    state.sql.exec(
+      `INSERT INTO memories (id, namespace, memory_type, title, content, summary, token_count, created_at, updated_at, last_accessed_at)
+       VALUES ('mem-old', 'global', 'semantic', 'Old Fact', 'Body', 'Sum', 10, ?1, ?1, ?1)`,
+      nowSec - 3600
+    );
+    state.sql.exec(
+      `INSERT INTO entities (entity_id, namespace, entity_type, canonical_name, updated_at)
+       VALUES ('node:rpi5', 'homelab', 'device', 'Raspberry Pi 5', ?1)`,
+      nowSec - 7200
+    );
+    state.sql.exec(
+      `INSERT INTO episodic_logs (session_id, client_id, event_type, payload, consolidated, created_at)
+       VALUES ('sess-recent', 'antigravity-win11', 'checkpoint', 'Recent checkpoint', 0, ?1)`,
+      nowSec - 10
+    );
+
+    const snapshot = await brain.getDashboardSnapshot({ limit: 20 });
+    const ids = snapshot.databases.map((d) => d.id);
+    const timestamps = snapshot.databases.map((d) => d.lastActivityAt);
+
+    // Expected strictly descending order:
+    // 1. brain-do-sqlite (now - 10)
+    // 2. kb-vectorize-768 (now - 120)
+    // 3. brain-vectorize-1024 (now - 600)
+    // 4. kb-d1-archive (now - 1800)
+    // 5. rpi5-qdrant-edge (now - 7200)
+    expect(ids).toEqual([
+      "brain-do-sqlite",
+      "kb-vectorize-768",
+      "brain-vectorize-1024",
+      "kb-d1-archive",
+      "rpi5-qdrant-edge"
+    ]);
+    for (let i = 1; i < timestamps.length; i++) {
+      expect(timestamps[i - 1]).toBeGreaterThanOrEqual(timestamps[i]);
+    }
+  });
 });
