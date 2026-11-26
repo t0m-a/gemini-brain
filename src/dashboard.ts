@@ -1,7 +1,9 @@
 /**
  * File: C:\Users\simon\Workspaces\gemini-brain\src\dashboard.ts
  * Purpose: Self-contained Cognitive NOC Web Visualization Dashboard for brain.tsimon.me
- *          Implements Option A (Browser Session Auth with zero embedded secrets) and 5 interactive visual modules:
+ *          Implements Option A (Browser Session Auth with zero embedded secrets),
+ *          Swiss Minimalist Design System Dark (Swiss Carbon #09090b / #111113, Ultra-Tight Flush,
+ *          Bahnschrift + Segoe UI Variable Text + Consolas, semantic status dots), and 5 visual modules:
  *          1. Interactive 2D Force-Directed Knowledge Graph Canvas (PageRank sizing + Edge Inspector)
  *          2. Connected Surfaces & Storage Databases Topology Matrix (including RPi5 Edge Sync & Knowledge Graph)
  *          3. Memory Types Status & Content Explorer by Namespace (semantic, procedural, episodic_summary, ADRs)
@@ -15,33 +17,40 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b1120'/%3E%3Ccircle cx='32' cy='32' r='18' fill='none' stroke='%2306b6d4' stroke-width='4'/%3E%3Ccircle cx='32' cy='32' r='7' fill='%2310b981'/%3E%3C/svg%3E" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2309090b'/%3E%3Ccircle cx='32' cy='32' r='18' fill='none' stroke='%23fafafa' stroke-width='3.5'/%3E%3Ccircle cx='32' cy='32' r='6.5' fill='%2310b981'/%3E%3C/svg%3E" />
   <title>Gemini Brain NOC — Cognitive Telemetry & Knowledge Graph (brain.${primaryDomain})</title>
   <style>
     :root {
-      --bg-0: #060911;
-      --bg-1: #0b1120;
-      --bg-2: #111827;
-      --bg-3: #1e293b;
-      --border: #1e293b;
-      --border-hi: #334155;
-      --text-0: #f8fafc;
-      --text-1: #cbd5e1;
-      --text-2: #94a3b8;
-      --text-3: #64748b;
-      --cyan: #06b6d4;
-      --cyan-glow: rgba(6, 182, 212, 0.18);
+      --bg-0: #09090b;
+      --bg-1: #111113;
+      --bg-2: #18181b;
+      --bg-3: #27272a;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-hi: rgba(255, 255, 255, 0.15);
+      --border-strong: rgba(255, 255, 255, 0.28);
+      --text-0: #fafafa;
+      --text-1: #d4d4d8;
+      --text-2: #a1a1aa;
+      --text-3: #8c8c96;
+      --accent: #fafafa;
+      --accent-hover: #e4e4e7;
+      --accent-fg: #09090b;
+      --cyan: #22d3ee;
+      --cyan-glow: rgba(34, 211, 238, 0.12);
       --emerald: #10b981;
-      --emerald-glow: rgba(16, 185, 129, 0.18);
-      --violet: #8b5cf6;
-      --violet-glow: rgba(139, 92, 246, 0.18);
+      --emerald-text: #6ee7b7;
+      --emerald-glow: rgba(16, 185, 129, 0.14);
+      --violet: #a78bfa;
+      --violet-glow: rgba(167, 139, 250, 0.14);
       --amber: #f59e0b;
-      --amber-glow: rgba(245, 158, 11, 0.18);
+      --amber-text: #fde68a;
+      --amber-glow: rgba(245, 158, 11, 0.14);
       --rose: #f43f5e;
-      --rose-glow: rgba(244, 63, 94, 0.18);
-      --blue: #3b82f6;
-      --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      --font-mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+      --rose-text: #fda4af;
+      --rose-glow: rgba(244, 63, 94, 0.14);
+      --font-head: "Bahnschrift", "Segoe UI Variable Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-body: "Segoe UI Variable Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --font-mono: "Consolas", ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
     }
 
     * {
@@ -51,12 +60,33 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
     }
 
     body {
-      background: radial-gradient(circle at 15% 0%, #0f172a 0%, var(--bg-0) 65%);
+      background: var(--bg-0);
       color: var(--text-0);
-      font-family: var(--font-sans);
+      font-family: var(--font-body);
       min-height: 100vh;
       overflow-x: hidden;
       line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+      scrollbar-color: var(--bg-3) var(--bg-0);
+    }
+
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: var(--bg-3);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #3f3f46;
+    }
+
+    code {
+      font-family: var(--font-mono);
     }
 
     /* Login Overlay (Option A: Browser Session Auth) */
@@ -64,105 +94,116 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       position: fixed;
       inset: 0;
       z-index: 9999;
-      background: rgba(6, 9, 17, 0.92);
-      backdrop-filter: blur(14px);
+      background: rgba(9, 9, 11, 0.92);
+      backdrop-filter: blur(12px);
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 20px;
+      padding: 16px;
     }
     #auth-overlay.hidden {
       display: none;
     }
     .auth-card {
       width: 100%;
-      max-width: 480px;
-      background: linear-gradient(180deg, #111827 0%, #0b1120 100%);
+      max-width: 440px;
+      background: var(--bg-1);
       border: 1px solid var(--border-hi);
-      border-radius: 14px;
-      padding: 28px;
-      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.65), 0 0 40px var(--cyan-glow);
+      border-radius: 8px;
+      padding: 18px 20px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.72);
     }
     .auth-logo {
       display: inline-flex;
       align-items: center;
-      gap: 10px;
-      padding: 6px 12px;
-      border-radius: 999px;
-      background: rgba(6, 182, 212, 0.12);
-      border: 1px solid rgba(6, 182, 212, 0.35);
-      color: var(--cyan);
-      font-size: 12px;
-      font-weight: 600;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      margin-bottom: 16px;
+      gap: 6px;
+      padding: 2px 8px;
+      border-radius: 5px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      color: var(--text-1);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      margin-bottom: 10px;
+    }
+    .auth-logo::before {
+      content: "";
+      width: 5.5px;
+      height: 5.5px;
+      border-radius: 50%;
+      background: var(--emerald);
+      flex-shrink: 0;
     }
     .auth-title {
-      font-size: 22px;
-      font-weight: 700;
+      font-family: var(--font-head);
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
       color: var(--text-0);
-      margin-bottom: 8px;
+      margin-bottom: 6px;
     }
     .auth-subtitle {
-      font-size: 13px;
+      font-size: 12.5px;
       color: var(--text-2);
-      margin-bottom: 20px;
+      margin-bottom: 14px;
     }
     .form-group {
-      margin-bottom: 16px;
+      margin-bottom: 10px;
     }
     .form-label {
       display: block;
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
-      color: var(--text-1);
-      margin-bottom: 6px;
+      color: var(--text-2);
+      margin-bottom: 4px;
     }
     .form-input, .form-select {
       width: 100%;
-      padding: 10px 12px;
+      padding: 6px 9px;
       background: var(--bg-0);
       border: 1px solid var(--border-hi);
-      border-radius: 8px;
+      border-radius: 6px;
       color: var(--text-0);
       font-family: var(--font-mono);
-      font-size: 13px;
+      font-size: 12px;
       outline: none;
-      transition: border-color 0.15s ease;
+      transition: border-color 0.14s ease, box-shadow 0.14s ease;
     }
     .form-input:focus, .form-select:focus {
-      border-color: var(--cyan);
-      box-shadow: 0 0 0 2px var(--cyan-glow);
+      border-color: var(--border-strong);
+      box-shadow: 0 0 0 2px rgba(250, 250, 250, 0.12);
     }
     .auth-helper {
-      background: rgba(15, 23, 42, 0.8);
-      border: 1px dashed var(--border-hi);
-      border-radius: 8px;
-      padding: 10px 12px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
       font-size: 11.5px;
       color: var(--text-2);
-      margin-bottom: 16px;
+      margin-bottom: 12px;
     }
     .auth-helper code {
       display: block;
       font-family: var(--font-mono);
-      color: var(--cyan);
-      margin-top: 6px;
+      color: var(--text-1);
+      margin-top: 5px;
       word-break: break-all;
       background: var(--bg-0);
-      padding: 6px 8px;
-      border-radius: 6px;
+      padding: 5px 7px;
+      border-radius: 5px;
       border: 1px solid var(--border);
+      font-size: 11px;
     }
     .auth-error {
-      color: var(--rose);
+      color: var(--rose-text);
       background: var(--rose-glow);
-      border: 1px solid rgba(244, 63, 94, 0.35);
-      border-radius: 8px;
-      padding: 9px 12px;
+      border: 1px solid rgba(244, 63, 94, 0.30);
+      border-radius: 6px;
+      padding: 7px 10px;
       font-size: 12px;
-      margin-bottom: 14px;
+      margin-bottom: 10px;
       display: none;
     }
 
@@ -171,94 +212,128 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 6px;
-      padding: 8px 14px;
-      border-radius: 8px;
-      font-size: 12.5px;
-      font-weight: 600;
+      gap: 5px;
+      padding: 6px 11px;
+      border-radius: 6px;
+      font-family: var(--font-body);
+      font-size: 12px;
+      font-weight: 500;
       cursor: pointer;
       border: 1px solid var(--border-hi);
-      background: var(--bg-2);
-      color: var(--text-0);
-      transition: all 0.15s ease;
+      background: transparent;
+      color: var(--text-1);
+      transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
       white-space: nowrap;
     }
     .btn:hover {
-      background: var(--bg-3);
-      border-color: var(--text-3);
+      background: var(--bg-2);
+      border-color: var(--border-strong);
+      color: var(--text-0);
     }
     .btn:disabled {
-      opacity: 0.5;
+      opacity: 0.45;
       cursor: not-allowed;
     }
     .btn-primary {
-      background: linear-gradient(135deg, #0891b2 0%, #2563eb 100%);
-      border-color: #06b6d4;
-      color: #fff;
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--accent-fg);
+      font-weight: 600;
     }
     .btn-primary:hover {
-      filter: brightness(1.1);
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+      color: var(--accent-fg);
     }
     .btn-emerald {
-      background: rgba(16, 185, 129, 0.15);
-      border-color: rgba(16, 185, 129, 0.45);
-      color: #34d399;
+      border-color: rgba(16, 185, 129, 0.30);
+      color: var(--emerald-text);
+    }
+    .btn-emerald:hover {
+      background: var(--emerald-glow);
+      border-color: rgba(16, 185, 129, 0.50);
+      color: var(--emerald-text);
     }
     .btn-amber {
-      background: rgba(245, 158, 11, 0.15);
-      border-color: rgba(245, 158, 11, 0.45);
-      color: #fbbf24;
+      border-color: rgba(245, 158, 11, 0.30);
+      color: var(--amber-text);
+    }
+    .btn-amber:hover {
+      background: var(--amber-glow);
+      border-color: rgba(245, 158, 11, 0.50);
+      color: var(--amber-text);
     }
     .btn-rose {
-      background: rgba(244, 63, 94, 0.15);
-      border-color: rgba(244, 63, 94, 0.45);
-      color: #fb7185;
+      border-color: rgba(244, 63, 94, 0.30);
+      color: var(--rose-text);
+    }
+    .btn-rose:hover {
+      background: var(--rose-glow);
+      border-color: rgba(244, 63, 94, 0.50);
+      color: var(--rose-text);
     }
     .btn-sm {
-      padding: 4px 10px;
+      padding: 3px 8px;
       font-size: 11.5px;
-      border-radius: 6px;
+      border-radius: 5px;
     }
 
+    /* Swiss Minimalist Badges: Neutral carbon surface + semantic status dots */
     .badge {
       display: inline-flex;
       align-items: center;
       gap: 5px;
-      padding: 2px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 5px;
+      font-size: 10.5px;
+      font-weight: 500;
       font-family: var(--font-mono);
+      background: var(--bg-2);
+      color: var(--text-1);
+      border: 1px solid var(--border);
+      white-space: nowrap;
+      line-height: 1.5;
     }
-    .badge-emerald {
-      background: var(--emerald-glow);
-      color: #34d399;
-      border: 1px solid rgba(16, 185, 129, 0.35);
+    .badge-emerald::before,
+    .badge-cyan::before,
+    .badge-violet::before,
+    .badge-amber::before,
+    .badge-rose::before {
+      content: "";
+      width: 5.5px;
+      height: 5.5px;
+      border-radius: 50%;
+      flex-shrink: 0;
     }
-    .badge-cyan {
-      background: var(--cyan-glow);
-      color: #22d3ee;
-      border: 1px solid rgba(6, 182, 212, 0.35);
+    .badge-emerald::before {
+      background: var(--emerald);
     }
-    .badge-violet {
-      background: var(--violet-glow);
-      color: #c084fc;
-      border: 1px solid rgba(139, 92, 246, 0.35);
+    .badge-cyan::before {
+      background: var(--cyan);
+    }
+    .badge-violet::before {
+      background: var(--violet);
+    }
+    .badge-amber::before {
+      background: var(--amber);
     }
     .badge-amber {
-      background: var(--amber-glow);
-      color: #fbbf24;
-      border: 1px solid rgba(245, 158, 11, 0.35);
+      background: rgba(245, 158, 11, 0.10);
+      color: var(--amber-text);
+      border-color: rgba(245, 158, 11, 0.25);
+    }
+    .badge-rose::before {
+      background: var(--rose);
     }
     .badge-rose {
-      background: var(--rose-glow);
-      color: #fb7185;
-      border: 1px solid rgba(244, 63, 94, 0.35);
+      background: rgba(244, 63, 94, 0.10);
+      color: var(--rose-text);
+      border-color: rgba(244, 63, 94, 0.25);
     }
     .badge-slate {
-      background: rgba(100, 116, 139, 0.2);
-      color: var(--text-1);
-      border: 1px solid rgba(100, 116, 139, 0.35);
+      background: var(--bg-2);
+      color: var(--text-2);
+      border-color: var(--border);
     }
 
     /* Top Header & System Pulse */
@@ -266,57 +341,58 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       position: sticky;
       top: 0;
       z-index: 100;
-      background: rgba(11, 17, 32, 0.88);
+      background: rgba(9, 9, 11, 0.94);
       backdrop-filter: blur(12px);
       border-bottom: 1px solid var(--border);
-      padding: 10px 20px;
+      padding: 5px 10px;
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
-      gap: 10px 14px;
+      gap: 6px 10px;
     }
     .header-primary {
       display: flex;
       flex-wrap: nowrap;
       align-items: center;
-      gap: clamp(10px, 1.4vw, 18px);
-      flex: 1 1 1120px;
+      gap: clamp(8px, 1.1vw, 14px);
+      flex: 1 1 1060px;
       min-width: 0;
       max-width: 100%;
     }
     .brand-group {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
       flex: 0 1 auto;
       min-width: 0;
-      max-width: clamp(200px, 34vw, 420px);
+      max-width: clamp(190px, 32vw, 390px);
     }
     .brand-text {
       min-width: 0;
     }
     .pulse-dot {
-      width: 10px;
-      height: 10px;
+      width: 8px;
+      height: 8px;
       flex-shrink: 0;
       border-radius: 50%;
       background: var(--emerald);
-      box-shadow: 0 0 12px var(--emerald);
-      animation: pulse 2s infinite;
+      animation: pulse 2.4s ease-in-out infinite;
     }
     @keyframes pulse {
-      0%, 100% { transform: scale(1); opacity: 1; }
-      50% { transform: scale(1.25); opacity: 0.65; }
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
     }
     .brand-title {
-      font-size: clamp(13.5px, 1.1vw, 16px);
-      font-weight: 700;
-      letter-spacing: -0.01em;
+      font-family: var(--font-head);
+      font-size: clamp(13.5px, 1.05vw, 15.5px);
+      font-weight: 600;
+      letter-spacing: -0.02em;
       display: flex;
       align-items: center;
       gap: 6px;
       min-width: 0;
+      color: var(--text-0);
     }
     .brand-title-text {
       white-space: nowrap;
@@ -324,7 +400,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       text-overflow: ellipsis;
     }
     .brand-sub {
-      font-size: clamp(10px, 0.78vw, 11.5px);
+      font-size: clamp(10px, 0.75vw, 11px);
       color: var(--text-2);
       font-family: var(--font-mono);
       white-space: nowrap;
@@ -350,30 +426,39 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       display: flex;
       flex-wrap: nowrap;
       align-items: stretch;
-      gap: clamp(5px, 0.55vw, 8px);
+      gap: 0;
       margin-left: auto;
       max-width: 100%;
+      background: var(--bg-1);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
     }
     .kpi-pill {
-      background: var(--bg-2);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 4px clamp(6px, 0.7vw, 10px);
+      background: transparent;
+      border: none;
+      border-right: 1px solid var(--border);
+      border-radius: 0;
+      padding: 2px clamp(6px, 0.65vw, 9px);
       display: flex;
       flex-direction: column;
       justify-content: center;
       gap: 1px;
       flex: 0 1 auto;
-      min-width: 56px;
+      min-width: 52px;
       overflow: hidden;
-      transition: border-color 0.15s ease;
+      font-variant-numeric: tabular-nums;
+      transition: background 0.14s ease;
+    }
+    .kpi-pill:last-child {
+      border-right: none;
     }
     .kpi-pill:hover {
-      border-color: var(--border-hi);
+      background: rgba(255, 255, 255, 0.03);
     }
     .kpi-pill .label {
       color: var(--text-2);
-      font-size: clamp(9.5px, 0.68vw, 10.5px);
+      font-size: clamp(9.5px, 0.65vw, 10px);
       line-height: 1.2;
       white-space: nowrap;
       overflow: hidden;
@@ -381,8 +466,8 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
     }
     .kpi-pill .val {
       font-family: var(--font-mono);
-      font-weight: 700;
-      font-size: clamp(10.5px, 0.8vw, 12px);
+      font-weight: 600;
+      font-size: clamp(10.5px, 0.78vw, 11.5px);
       line-height: 1.25;
       color: var(--text-0);
       white-space: nowrap;
@@ -390,29 +475,23 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       text-overflow: ellipsis;
     }
     @container kpi-strip (max-width: 860px) {
-      .kpi-strip-track {
-        gap: 5px;
-      }
       .kpi-pill {
-        padding: 3px 7px;
-      }
-      .kpi-pill .label {
-        font-size: 9.5px;
-      }
-      .kpi-pill .val {
-        font-size: 11px;
-      }
-    }
-    @container kpi-strip (max-width: 660px) {
-      .kpi-strip-track {
-        gap: 4px;
-      }
-      .kpi-pill {
-        padding: 3px 6px;
-        min-width: 48px;
+        padding: 2px 6px;
       }
       .kpi-pill .label {
         font-size: 9px;
+      }
+      .kpi-pill .val {
+        font-size: 10.5px;
+      }
+    }
+    @container kpi-strip (max-width: 660px) {
+      .kpi-pill {
+        padding: 2px 5px;
+        min-width: 44px;
+      }
+      .kpi-pill .label {
+        font-size: 8.5px;
       }
       .kpi-pill .val {
         font-size: 10px;
@@ -422,55 +501,56 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 8px;
+      gap: 5px;
       flex: 0 0 auto;
       margin-left: auto;
     }
 
-    /* Navigation Tabs */
+    /* Navigation Tabs (Flat Swiss Underline) */
     .nav-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
       flex-wrap: wrap;
-      gap: 10px;
-      padding: 10px 20px;
-      background: var(--bg-1);
+      gap: 8px;
+      padding: 0 10px;
+      background: var(--bg-0);
       border-bottom: 1px solid var(--border);
     }
     .tab-group {
       display: flex;
       flex-wrap: wrap;
-      gap: 6px;
+      gap: 4px;
     }
     .tab-btn {
-      padding: 7px 14px;
-      border-radius: 8px;
-      font-size: 12.5px;
-      font-weight: 600;
+      padding: 7px 10px;
+      border-radius: 0;
+      font-family: var(--font-body);
+      font-size: 12px;
+      font-weight: 500;
       color: var(--text-2);
       background: transparent;
-      border: 1px solid transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
       cursor: pointer;
       display: inline-flex;
       align-items: center;
-      gap: 7px;
-      transition: all 0.15s ease;
+      gap: 6px;
+      transition: color 0.14s ease, border-color 0.14s ease;
     }
     .tab-btn:hover {
       color: var(--text-0);
-      background: rgba(255, 255, 255, 0.04);
     }
     .tab-btn.active {
-      color: var(--cyan);
-      background: rgba(6, 182, 212, 0.12);
-      border-color: rgba(6, 182, 212, 0.35);
+      color: var(--text-0);
+      border-bottom-color: var(--accent);
+      font-weight: 600;
     }
 
-    /* Main Layout Containers */
+    /* Main Layout Containers (Ultra-Tight Flush) */
     .view-section {
       display: none;
-      padding: 18px 20px 40px;
+      padding: 8px 8px 16px;
       max-width: 1920px;
       margin: 0 auto;
     }
@@ -480,89 +560,146 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
 
     .noc-grid {
       display: grid;
-      grid-template-columns: 350px 1fr 410px;
-      gap: 16px;
+      grid-template-columns: 295px 1fr 345px;
+      gap: 8px;
       align-items: start;
     }
-    @media (max-width: 1440px) {
+    @media (max-width: 1360px) {
       .noc-grid {
-        grid-template-columns: 320px 1fr;
+        grid-template-columns: 280px 1fr;
       }
       .noc-right-col {
         grid-column: 1 / -1;
       }
     }
-    @media (max-width: 1024px) {
+    @media (max-width: 960px) {
       .noc-grid {
         grid-template-columns: 1fr;
       }
     }
 
+    .split-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .split-grid:last-child {
+      margin-bottom: 0;
+    }
+    @media (max-width: 560px) {
+      .split-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
     .panel {
-      background: rgba(17, 24, 39, 0.85);
+      background: var(--bg-1);
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 6px;
       overflow: hidden;
-      margin-bottom: 16px;
+      margin-bottom: 8px;
+    }
+    .panel:last-child {
+      margin-bottom: 0;
     }
     .panel-header {
-      padding: 12px 16px;
+      padding: 6px 10px;
       border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      background: rgba(11, 17, 32, 0.6);
+      background: transparent;
     }
     .panel-title {
+      font-family: var(--font-head);
       font-size: 13px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      color: var(--text-1);
+      font-weight: 600;
+      letter-spacing: -0.015em;
+      color: var(--text-0);
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
     }
     .panel-body {
-      padding: 14px 16px;
+      padding: 0;
+    }
+    .panel-body-padded {
+      padding: 8px 10px;
+    }
+    .panel-scroll {
+      max-height: 460px;
+      overflow-y: auto;
+    }
+    .panel-scroll-lg {
+      max-height: 560px;
+      overflow-y: auto;
+    }
+    .empty-state {
+      padding: 10px;
+      font-size: 12px;
+      color: var(--text-2);
     }
 
-    /* Surface & Database Cards */
+    /* Flush Hairline Rows (Surfaces, Databases, Logs, ADRs, Conflicts) */
     .surface-card {
-      background: var(--bg-1);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 11px 13px;
-      margin-bottom: 10px;
-      transition: border-color 0.15s ease;
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid var(--border);
+      border-radius: 0;
+      padding: 7px 10px;
+      margin-bottom: 0;
+      transition: background 0.14s ease;
     }
     .surface-card:last-child {
-      margin-bottom: 0;
+      border-bottom: none;
     }
     .surface-card:hover {
-      border-color: var(--border-hi);
+      background: rgba(255, 255, 255, 0.025);
+    }
+    .surface-card.conflict-pending {
+      border-left: 2px solid var(--amber);
     }
     .surface-top {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 8px;
-      margin-bottom: 5px;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 2px;
     }
     .surface-name {
+      font-family: var(--font-head);
       font-size: 13px;
-      font-weight: 700;
+      font-weight: 600;
+      letter-spacing: -0.01em;
       color: var(--text-0);
     }
-    .surface-meta {
+    .surface-id {
+      font-size: 10.5px;
+      color: var(--text-2);
+      font-family: var(--font-mono);
+      margin-bottom: 2px;
+    }
+    .surface-desc {
       font-size: 11.5px;
+      color: var(--text-2);
+      line-height: 1.42;
+    }
+    .surface-meta {
+      font-size: 11px;
       color: var(--text-2);
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
-      margin-top: 6px;
+      margin-top: 4px;
       font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+    .surface-meta strong {
+      color: var(--text-0);
+      font-weight: 600;
     }
     .surfaces-extra {
       display: grid;
@@ -570,43 +707,43 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       opacity: 0;
       pointer-events: none;
       margin-top: 0;
-      transition: grid-template-rows 0.22s ease, opacity 0.18s ease, margin-top 0.22s ease;
+      transition: grid-template-rows 0.2s ease, opacity 0.16s ease;
     }
     .surfaces-extra.expanded {
       grid-template-rows: 1fr;
       opacity: 1;
       pointer-events: auto;
-      margin-top: 10px;
+      border-top: 1px solid var(--border);
     }
     .surfaces-extra-inner {
       overflow: hidden;
     }
     .surfaces-toggle-btn {
       width: 100%;
-      margin-top: 10px;
-      padding: 7px 12px;
-      border-radius: 8px;
-      border: 1px dashed var(--border-hi);
-      background: rgba(15, 23, 42, 0.72);
-      color: var(--cyan);
-      font-size: 11.5px;
-      font-weight: 600;
+      margin-top: 0;
+      padding: 6px 10px;
+      border: none;
+      border-top: 1px solid var(--border);
+      border-radius: 0;
+      background: var(--bg-2);
+      color: var(--text-1);
+      font-size: 11px;
+      font-weight: 500;
       font-family: var(--font-mono);
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+      transition: background 0.14s ease, color 0.14s ease;
     }
     .surfaces-toggle-btn:hover {
-      background: rgba(6, 182, 212, 0.12);
-      border-color: var(--cyan);
+      background: var(--bg-3);
       color: var(--text-0);
     }
     .surfaces-toggle-chevron {
       display: inline-block;
-      transition: transform 0.2s ease;
+      transition: transform 0.18s ease;
       font-size: 11px;
     }
     .surfaces-toggle-btn[aria-expanded="true"] .surfaces-toggle-chevron {
@@ -617,10 +754,11 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       user-select: none;
       white-space: nowrap;
       flex-shrink: 0;
-      transition: filter 0.15s ease;
+      transition: border-color 0.14s ease, color 0.14s ease;
     }
     .surfaces-header-toggle:hover {
-      filter: brightness(1.15);
+      border-color: var(--border-strong);
+      color: var(--text-0);
     }
 
     /* Graph Canvas */
@@ -629,16 +767,16 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
-      gap: 8px;
-      padding: 10px 14px;
+      gap: 6px;
+      padding: 6px 10px;
       background: var(--bg-1);
       border-bottom: 1px solid var(--border);
     }
     .graph-canvas-wrap {
       position: relative;
       width: 100%;
-      height: 540px;
-      background: radial-gradient(circle at center, #0f172a 0%, #060911 100%);
+      height: clamp(460px, calc(100vh - 205px), 680px);
+      background: var(--bg-0);
       overflow: hidden;
     }
     #kg-canvas {
@@ -652,59 +790,86 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
     }
     .graph-legend {
       position: absolute;
-      bottom: 12px;
-      left: 12px;
-      background: rgba(11, 17, 32, 0.88);
-      border: 1px solid var(--border-hi);
-      border-radius: 8px;
-      padding: 8px 12px;
-      font-size: 11px;
+      bottom: 8px;
+      left: 8px;
+      background: rgba(9, 9, 11, 0.90);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 5px 8px;
+      font-size: 10.5px;
       display: flex;
       flex-wrap: wrap;
-      gap: 10px;
+      gap: 9px;
       pointer-events: none;
     }
     .legend-item {
       display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 4px;
       color: var(--text-1);
     }
     .legend-dot {
-      width: 9px;
-      height: 9px;
+      width: 7px;
+      height: 7px;
       border-radius: 50%;
     }
     .node-inspector {
       border-top: 1px solid var(--border);
       background: var(--bg-1);
-      padding: 14px 16px;
+      padding: 7px 10px;
+    }
+    .triple-chip {
+      background: var(--bg-0);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 5px 8px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+    }
+
+    /* RRF Candidate Rows */
+    .rrf-item {
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 6px 8px;
+      margin-bottom: 6px;
+    }
+    .rrf-item:last-child {
+      margin-bottom: 0;
     }
 
     /* Memory Types & Content Explorer Module */
     .type-cards-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-      gap: 14px;
-      margin-bottom: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 8px;
+      margin-bottom: 8px;
     }
     .type-stat-card {
-      background: linear-gradient(180deg, rgba(30, 41, 59, 0.5) 0%, rgba(15, 23, 42, 0.8) 100%);
-      border: 1px solid var(--border-hi);
-      border-radius: 12px;
-      padding: 16px;
+      background: var(--bg-1);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
       cursor: pointer;
-      transition: all 0.15s ease;
+      transition: border-color 0.14s ease, background 0.14s ease;
     }
-    .type-stat-card:hover, .type-stat-card.active {
-      border-color: var(--cyan);
-      box-shadow: 0 0 20px var(--cyan-glow);
+    .type-stat-card:hover {
+      border-color: var(--border-strong);
+      background: #141416;
+    }
+    .type-stat-card.active {
+      border-color: var(--accent);
+      background: #141417;
     }
     .type-stat-num {
-      font-size: 26px;
-      font-weight: 800;
-      font-family: var(--font-mono);
-      margin: 6px 0 4px;
+      font-family: var(--font-head);
+      font-size: 22px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+      color: var(--text-0);
+      margin: 4px 0 2px;
     }
 
     /* Tables */
@@ -714,19 +879,24 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
     table.data-table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 12.5px;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
     }
     table.data-table th, table.data-table td {
-      padding: 10px 12px;
+      padding: 6px 8px;
       text-align: left;
       border-bottom: 1px solid var(--border);
     }
     table.data-table th {
-      font-size: 11px;
+      font-size: 10.5px;
+      font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.05em;
       color: var(--text-2);
-      background: rgba(11, 17, 32, 0.6);
+      background: var(--bg-1);
+    }
+    table.data-table tr:last-child td {
+      border-bottom: none;
     }
     table.data-table tr:hover td {
       background: rgba(255, 255, 255, 0.025);
@@ -736,70 +906,83 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
     .filter-bar {
       display: flex;
       flex-wrap: wrap;
-      align-items: center;
+      align-items: flex-end;
       justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 14px;
+      gap: 8px 12px;
+      margin-bottom: 8px;
+    }
+    .filter-heading {
+      font-size: 10.5px;
+      color: var(--text-2);
+      margin-bottom: 4px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
     }
     .pill-group {
       display: flex;
       flex-wrap: wrap;
-      gap: 6px;
+      gap: 5px;
     }
     .filter-pill {
-      padding: 5px 11px;
+      padding: 3px 9px;
       border-radius: 999px;
+      font-family: var(--font-body);
       font-size: 11.5px;
-      font-weight: 600;
-      background: var(--bg-1);
-      border: 1px solid var(--border-hi);
+      font-weight: 500;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
       color: var(--text-2);
       cursor: pointer;
-      transition: all 0.15s ease;
+      transition: all 0.14s ease;
     }
     .filter-pill:hover {
       color: var(--text-0);
+      border-color: var(--border-hi);
     }
     .filter-pill.active {
-      background: var(--cyan-glow);
-      color: #22d3ee;
-      border-color: var(--cyan);
+      background: var(--accent);
+      color: var(--accent-fg);
+      border-color: var(--accent);
+      font-weight: 600;
     }
 
     .memories-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-      gap: 14px;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 8px;
     }
     .memory-card {
-      background: var(--bg-1);
+      background: #141416;
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 14px;
+      border-radius: 6px;
+      padding: 8px 10px;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      gap: 10px;
-      transition: border-color 0.15s ease;
+      gap: 6px;
+      transition: border-color 0.14s ease;
     }
     .memory-card:hover {
-      border-color: var(--cyan);
+      border-color: var(--border-strong);
     }
     .memory-title {
-      font-size: 14px;
-      font-weight: 700;
+      font-family: var(--font-head);
+      font-size: 13.5px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
       color: var(--text-0);
-      margin-top: 6px;
+      margin-top: 4px;
     }
     .memory-preview {
-      font-size: 12px;
+      font-size: 11.5px;
       color: var(--text-1);
       background: var(--bg-0);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 10px;
+      border-radius: 5px;
+      padding: 6px 8px;
       font-family: var(--font-mono);
-      max-height: 150px;
+      max-height: 140px;
       overflow-y: auto;
       white-space: pre-wrap;
       word-break: break-word;
@@ -808,24 +991,24 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
     /* Diff Boxes */
     .diff-box {
       font-family: var(--font-mono);
-      font-size: 11.5px;
-      border-radius: 8px;
-      padding: 8px 10px;
-      margin-top: 6px;
+      font-size: 11px;
+      border-radius: 5px;
+      padding: 6px 8px;
+      margin-top: 5px;
       white-space: pre-wrap;
       word-break: break-word;
-      max-height: 160px;
+      max-height: 150px;
       overflow-y: auto;
     }
     .diff-old {
       background: rgba(244, 63, 94, 0.08);
-      border: 1px solid rgba(244, 63, 94, 0.3);
-      color: #fda4af;
+      border: 1px solid rgba(244, 63, 94, 0.25);
+      color: var(--rose-text);
     }
     .diff-new {
       background: rgba(16, 185, 129, 0.08);
-      border: 1px solid rgba(16, 185, 129, 0.3);
-      color: #6ee7b7;
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      color: var(--emerald-text);
     }
 
     /* Modal for Full Memory Inspection */
@@ -833,12 +1016,12 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       position: fixed;
       inset: 0;
       z-index: 5000;
-      background: rgba(6, 9, 17, 0.82);
+      background: rgba(9, 9, 11, 0.86);
       backdrop-filter: blur(8px);
       display: none;
       align-items: center;
       justify-content: center;
-      padding: 24px;
+      padding: 16px;
     }
     #memory-modal.open {
       display: flex;
@@ -847,26 +1030,26 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       width: 100%;
       max-width: 820px;
       max-height: 88vh;
-      background: var(--bg-2);
+      background: var(--bg-1);
       border: 1px solid var(--border-hi);
-      border-radius: 14px;
+      border-radius: 8px;
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.75);
     }
     .modal-body {
-      padding: 18px;
+      padding: 10px 12px;
       overflow-y: auto;
-      font-size: 13px;
+      font-size: 12.5px;
     }
     pre.code-block {
       background: var(--bg-0);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 12px;
+      border-radius: 5px;
+      padding: 8px 10px;
       font-family: var(--font-mono);
-      font-size: 12px;
+      font-size: 11.5px;
       color: var(--text-1);
       white-space: pre-wrap;
       word-break: break-word;
@@ -880,7 +1063,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
   <div id="auth-overlay">
     <div class="auth-card">
       <div class="auth-logo">
-        <span>🛡️ Zero-Trust Browser Session Auth</span>
+        <span>Zero-Trust Browser Session Auth</span>
       </div>
       <div class="auth-title">Gemini Brain Cognitive NOC</div>
       <div class="auth-subtitle">
@@ -911,12 +1094,12 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         </div>
 
         <div class="auth-helper">
-          <div>💡 <strong>Need your token from Windows 11 PowerShell?</strong> Run:</div>
+          <div><strong>Need your token from Windows 11 PowerShell?</strong> Run:</div>
           <code>(Get-Content C:\\Users\\simon\\Workspaces\\gemini-brain\\.dev.vars | Where-Object { $_ -match '^MCP_BEARER_TOKEN=' }) -replace '^MCP_BEARER_TOKEN=','' | Set-Clipboard</code>
         </div>
 
-        <button type="submit" id="auth-submit-btn" class="btn btn-primary" style="width: 100%; padding: 11px;">
-          🔓 Unlock Cognitive NOC Dashboard
+        <button type="submit" id="auth-submit-btn" class="btn btn-primary" style="width: 100%; padding: 8px;">
+          Unlock Cognitive NOC Dashboard
         </button>
       </form>
     </div>
@@ -939,8 +1122,8 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       <div class="brand-group">
         <div class="pulse-dot" id="status-dot"></div>
         <div class="brand-text">
-          <div class="brand-title"><span class="brand-title-text">🧠 Gemini Brain Cognitive NOC</span><span class="badge badge-cyan" style="font-size:10px; flex-shrink:0;">v${version}</span></div>
-          <div class="brand-sub" title="brain.${primaryDomain} • BrainMemoryDO + D1 Archive + Dual Vectorize">brain.${primaryDomain} • BrainMemoryDO + D1 Archive + Dual Vectorize</div>
+          <div class="brand-title"><span class="brand-title-text">Gemini Brain Cognitive NOC</span><span class="badge badge-cyan" style="font-size:10px; flex-shrink:0;">v${version}</span></div>
+          <div class="brand-sub" title="brain.${primaryDomain} · BrainMemoryDO + D1 Archive + Dual Vectorize">brain.${primaryDomain} · BrainMemoryDO + D1 Archive + Dual Vectorize</div>
         </div>
       </div>
 
@@ -968,7 +1151,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           </div>
           <div class="kpi-pill">
             <span class="label">Next 03:00 AM Sleep Cycle</span>
-            <span class="val" style="color: var(--cyan);" id="kpi-alarm-countdown">—</span>
+            <span class="val" id="kpi-alarm-countdown">—</span>
           </div>
         </div>
       </div>
@@ -976,16 +1159,16 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
 
     <div class="header-actions">
       <button class="btn btn-sm btn-emerald" onclick="refreshDashboard()" id="btn-refresh">
-        ↻ Refresh Telemetry
+        ↻ Refresh
       </button>
       <button class="btn btn-sm btn-amber" onclick="triggerConsolidationNow()" id="btn-consolidate">
-        🌙 Run Sleep Cycle Now
+        Sleep Cycle
       </button>
       <button class="btn btn-sm" onclick="triggerReindexNow()" id="btn-reindex">
-        ⚡ Reindex FTS5/Vectors
+        Reindex
       </button>
       <button class="btn btn-sm btn-rose" onclick="lockSession()">
-        🔒 Lock Session
+        Lock
       </button>
     </div>
   </header>
@@ -994,16 +1177,16 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
   <nav class="nav-bar">
     <div class="tab-group">
       <button class="tab-btn active" data-tab="tab-noc" onclick="switchTab('tab-noc', this)">
-        🕸️ 1. NOC Topology, Surfaces & Knowledge Graph
+        1. NOC Topology, Surfaces &amp; Knowledge Graph
       </button>
       <button class="tab-btn" data-tab="tab-memories" onclick="switchTab('tab-memories', this)">
-        🗂️ 2. Memory Types Status & Content by Namespace
+        2. Memory Types Status &amp; Content by Namespace
       </button>
       <button class="tab-btn" data-tab="tab-sleep" onclick="switchTab('tab-sleep', this)">
-        🌙 3. Sleep Cycle, Governance Watchdog, ADRs & Diff Rollback
+        3. Sleep Cycle, Governance Watchdog, ADRs &amp; Diff Rollback
       </button>
     </div>
-    <div style="font-size: 11.5px; color: var(--text-2); font-family: var(--font-mono);" id="last-sync-label">
+    <div style="font-size: 11px; color: var(--text-2); font-family: var(--font-mono);" id="last-sync-label">
       Waiting for session authentication...
     </div>
   </nav>
@@ -1017,7 +1200,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       <div>
         <div class="panel">
           <div class="panel-header">
-            <div class="panel-title">🖥️ Connected Client Surfaces</div>
+            <div class="panel-title">Connected Client Surfaces</div>
             <button
               type="button"
               class="badge badge-cyan surfaces-header-toggle"
@@ -1029,17 +1212,17 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
             >6 Surfaces ▾</button>
           </div>
           <div class="panel-body" id="surfaces-container">
-            <div style="color: var(--text-2); font-size: 12px;">Loading surface telemetry...</div>
+            <div class="empty-state">Loading surface telemetry...</div>
           </div>
         </div>
 
         <div class="panel">
           <div class="panel-header">
-            <div class="panel-title">🗄️ Federated Databases & Indexes</div>
+            <div class="panel-title">Federated Databases &amp; Indexes</div>
             <span class="badge badge-emerald">4-Way RRF</span>
           </div>
           <div class="panel-body" id="databases-container">
-            <div style="color: var(--text-2); font-size: 12px;">Loading storage engines...</div>
+            <div class="empty-state">Loading storage engines...</div>
           </div>
         </div>
       </div>
@@ -1048,29 +1231,29 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       <div>
         <div class="panel">
           <div class="panel-header">
-            <div class="panel-title">🕸️ Interactive Knowledge Graph (PageRank Centrality Sizing)</div>
-            <div style="display: flex; gap: 6px; align-items: center;">
-              <span class="badge badge-violet" id="graph-stats-badge">0 Nodes • 0 Edges</span>
-              <button class="btn btn-sm" onclick="resetGraphCamera()">⌖ Center Graph</button>
+            <div class="panel-title">Interactive Knowledge Graph (PageRank Centrality)</div>
+            <div style="display: flex; gap: 5px; align-items: center;">
+              <span class="badge badge-violet" id="graph-stats-badge">0 Nodes · 0 Edges</span>
+              <button class="btn btn-sm" onclick="resetGraphCamera()">⌖ Center</button>
             </div>
           </div>
 
           <div class="graph-toolbar">
-            <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
-              <select id="graph-ns-filter" class="form-select" style="width: auto; padding: 5px 10px; font-size: 12px;" onchange="applyGraphFilter()">
+            <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
+              <select id="graph-ns-filter" class="form-select" style="width: auto; padding: 4px 8px; font-size: 11.5px;" onchange="applyGraphFilter()">
                 <option value="all">All Namespaces</option>
               </select>
               <input
                 id="graph-search-input"
                 type="text"
                 class="form-input"
-                style="width: 210px; padding: 5px 10px; font-size: 12px;"
-                placeholder="Highlight node (e.g. rpi5, d1)..."
+                style="width: 195px; padding: 4px 8px; font-size: 11.5px;"
+                placeholder="Highlight node (rpi5, d1)..."
                 oninput="applyGraphFilter()"
               />
             </div>
             <div style="font-size: 11px; color: var(--text-2);">
-              Drag nodes • Scroll to zoom • Click node to inspect triples
+              Drag nodes · Scroll to zoom · Click node to inspect triples
             </div>
           </div>
 
@@ -1086,8 +1269,8 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           </div>
 
           <div class="node-inspector" id="node-inspector">
-            <div style="font-size: 12px; color: var(--text-2);">
-              👆 Click any entity node in the Knowledge Graph above (such as <code>node:rpi5</code> or <code>domain:tsimon.me</code>) to inspect its PageRank centrality, incoming/outgoing relational edges, and linked memories.
+            <div style="font-size: 11.5px; color: var(--text-2);">
+              Click any entity node in the Knowledge Graph above (such as <code>node:rpi5</code> or <code>domain:tsimon.me</code>) to inspect its PageRank centrality, incoming/outgoing relational edges, and linked memories.
             </div>
           </div>
         </div>
@@ -1097,10 +1280,10 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       <div class="noc-right-col">
         <div class="panel">
           <div class="panel-header">
-            <div class="panel-title">🔍 4-Way RRF Recall Inspector</div>
+            <div class="panel-title">4-Way RRF Recall Inspector</div>
             <span class="badge badge-cyan">bge-m3 + D1 + KG</span>
           </div>
-          <div class="panel-body">
+          <div class="panel-body-padded">
             <form id="recall-form" onsubmit="runRecallPlayground(event)">
               <div class="form-group">
                 <label class="form-label">Search Query</label>
@@ -1114,7 +1297,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
                 />
               </div>
 
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px;">
                 <div>
                   <label class="form-label">Namespace Scope</label>
                   <select id="recall-namespace" class="form-select">
@@ -1135,19 +1318,19 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
                     max="6000"
                     step="100"
                     value="2000"
-                    style="width: 100%; margin-top: 8px;"
+                    style="width: 100%; margin-top: 6px; accent-color: #fafafa;"
                     oninput="document.getElementById('budget-val').textContent = this.value"
                   />
                 </div>
               </div>
 
               <button type="submit" id="recall-submit-btn" class="btn btn-primary" style="width: 100%;">
-                ⚡ Execute 4-Way Federated Recall
+                Execute 4-Way Federated Recall
               </button>
             </form>
 
-            <div id="recall-results-container" style="margin-top: 16px;">
-              <div style="font-size: 12px; color: var(--text-2);">
+            <div id="recall-results-container" style="margin-top: 10px;">
+              <div style="font-size: 11.5px; color: var(--text-2);">
                 Run a test query above to inspect how <strong>Brain FTS5</strong>, <strong>Brain Vectorize (1024d)</strong>, <strong>D1 Archive FTS5</strong>, <strong>KB Vectorize (768d)</strong>, and <strong>1-Hop Knowledge Graph Expansion</strong> fuse and pack into your token budget.
               </div>
             </div>
@@ -1167,21 +1350,21 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
     <!-- Namespace x Memory Type Breakdown Matrix -->
     <div class="panel">
       <div class="panel-header">
-        <div class="panel-title">📊 Memory Types Status Breakdown by Namespace</div>
-        <span class="badge badge-cyan">Click any row/type to filter content below</span>
+        <div class="panel-title">Memory Types Status Breakdown by Namespace</div>
+        <span class="badge badge-slate">Click row or type to filter below</span>
       </div>
       <div class="panel-body data-table-wrap">
         <table class="data-table" id="ns-type-matrix-table">
           <thead>
             <tr>
               <th>Namespace</th>
-              <th>Semantic Memories</th>
-              <th>Procedural Memories</th>
-              <th>Episodic Summaries (03:00 AM Digests)</th>
-              <th>Active ADRs (Decisions)</th>
-              <th>Total Tokens Stored</th>
-              <th>Avg Importance</th>
-              <th>Synaptic Recalls</th>
+              <th>Semantic</th>
+              <th>Procedural</th>
+              <th>Episodic Digests</th>
+              <th>Active ADRs</th>
+              <th>Total Tokens</th>
+              <th>Avg Imp</th>
+              <th>Recalls</th>
               <th>Action</th>
             </tr>
           </thead>
@@ -1193,34 +1376,34 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
     <!-- Interactive Memory Content Explorer -->
     <div class="panel">
       <div class="panel-header">
-        <div class="panel-title">🗂️ Memory Content Explorer by Namespace & Type</div>
+        <div class="panel-title">Memory Content Explorer by Namespace &amp; Type</div>
         <span class="badge badge-emerald" id="explorer-count-badge">0 Memories</span>
       </div>
-      <div class="panel-body">
+      <div class="panel-body-padded">
         <div class="filter-bar">
           <div>
-            <div style="font-size: 11px; color: var(--text-2); margin-bottom: 5px; font-weight: 600;">FILTER BY NAMESPACE:</div>
+            <div class="filter-heading">Namespace</div>
             <div class="pill-group" id="explorer-ns-pills"></div>
           </div>
 
           <div>
-            <div style="font-size: 11px; color: var(--text-2); margin-bottom: 5px; font-weight: 600;">FILTER BY MEMORY TYPE:</div>
+            <div class="filter-heading">Memory Type</div>
             <div class="pill-group" id="explorer-type-pills">
               <button class="filter-pill active" data-type="all" onclick="setExplorerType('all')">All Types</button>
-              <button class="filter-pill" data-type="semantic" onclick="setExplorerType('semantic')">📘 semantic</button>
-              <button class="filter-pill" data-type="procedural" onclick="setExplorerType('procedural')">⚙️ procedural</button>
-              <button class="filter-pill" data-type="episodic_summary" onclick="setExplorerType('episodic_summary')">🌙 episodic_summary</button>
+              <button class="filter-pill" data-type="semantic" onclick="setExplorerType('semantic')">semantic</button>
+              <button class="filter-pill" data-type="procedural" onclick="setExplorerType('procedural')">procedural</button>
+              <button class="filter-pill" data-type="episodic_summary" onclick="setExplorerType('episodic_summary')">episodic_summary</button>
             </div>
           </div>
 
-          <div style="min-width: 260px;">
-            <div style="font-size: 11px; color: var(--text-2); margin-bottom: 5px; font-weight: 600;">SEARCH CONTENT OR ID:</div>
+          <div style="min-width: 240px;">
+            <div class="filter-heading">Search Content or ID</div>
             <input
               id="explorer-search"
               type="text"
               class="form-input"
-              style="padding: 6px 10px; font-size: 12px;"
-              placeholder="Filter by keyword, title, or memory ID..."
+              style="padding: 5px 8px; font-size: 11.5px;"
+              placeholder="Filter by keyword, title, or ID..."
               oninput="renderMemoryExplorer()"
             />
           </div>
@@ -1236,56 +1419,56 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
        ========================================================================= -->
   <section id="tab-sleep" class="view-section">
     <!-- Active Memory Governance & Semantic Contradiction Triage Panel -->
-    <div class="panel" style="margin-bottom: 16px;">
+    <div class="panel">
       <div class="panel-header">
-        <div class="panel-title">🛡️ Active Memory Governance & Semantic Contradiction Triage (memory_conflicts)</div>
-        <div style="display: flex; gap: 8px; align-items: center;">
+        <div class="panel-title">Active Memory Governance &amp; Contradiction Triage (memory_conflicts)</div>
+        <div style="display: flex; gap: 6px; align-items: center;">
           <span class="badge badge-amber" id="conflicts-count-badge">0 Pending</span>
           <button class="btn btn-sm btn-primary" onclick="triggerConflictAuditNow()" id="btn-audit-conflicts">
-            🔍 Run Contradiction Audit Now
+            Run Contradiction Audit
           </button>
         </div>
       </div>
-      <div class="panel-body" id="conflicts-container" style="max-height: 460px; overflow-y: auto;"></div>
+      <div class="panel-body panel-scroll" id="conflicts-container"></div>
     </div>
 
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 16px;">
+    <div class="split-grid">
       <!-- Pending Episodic Scratchpad Logs -->
       <div class="panel">
         <div class="panel-header">
-          <div class="panel-title">📝 Hippocampus Scratchpad (Episodic Logs Queue)</div>
+          <div class="panel-title">Hippocampus Scratchpad (Episodic Logs Queue)</div>
           <span class="badge badge-amber" id="pending-episodic-badge">0 Pending</span>
         </div>
-        <div class="panel-body" id="episodic-logs-container" style="max-height: 520px; overflow-y: auto;"></div>
+        <div class="panel-body panel-scroll" id="episodic-logs-container"></div>
       </div>
 
       <!-- Nocturnal Consolidation Runs (Llama 3.3 70B Digests) -->
       <div class="panel">
         <div class="panel-header">
-          <div class="panel-title">🌙 03:00 AM Nocturnal Consolidation Runs (Llama 3.3 70B)</div>
+          <div class="panel-title">03:00 AM Nocturnal Consolidation Runs (Llama 3.3 70B)</div>
           <span class="badge badge-violet" id="consolidation-runs-badge">0 Runs</span>
         </div>
-        <div class="panel-body" id="consolidation-runs-container" style="max-height: 520px; overflow-y: auto;"></div>
+        <div class="panel-body panel-scroll" id="consolidation-runs-container"></div>
       </div>
     </div>
 
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 16px;">
+    <div class="split-grid">
       <!-- Mutation Audit Trail & 1-Click Rollback -->
       <div class="panel">
         <div class="panel-header">
-          <div class="panel-title">🔄 Mutation Audit Stream (Before/After Diff & Rollback)</div>
+          <div class="panel-title">Mutation Audit Stream (Before/After Diff &amp; Rollback)</div>
           <span class="badge badge-cyan" id="mutations-count-badge">0 Mutations</span>
         </div>
-        <div class="panel-body" id="mutations-container" style="max-height: 600px; overflow-y: auto;"></div>
+        <div class="panel-body panel-scroll-lg" id="mutations-container"></div>
       </div>
 
       <!-- Active Architecture Decision Records (ADRs) -->
       <div class="panel">
         <div class="panel-header">
-          <div class="panel-title">📜 Active Architecture Decision Records (ADRs)</div>
+          <div class="panel-title">Active Architecture Decision Records (ADRs)</div>
           <span class="badge badge-emerald" id="adrs-count-badge">0 Active</span>
         </div>
-        <div class="panel-body" id="adrs-container" style="max-height: 600px; overflow-y: auto;"></div>
+        <div class="panel-body panel-scroll-lg" id="adrs-container"></div>
       </div>
     </div>
   </section>
@@ -1307,8 +1490,8 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       if (!raw) return "";
       return String(raw)
         .trim()
-        .replace(/^MCP_BEARER_TOKEN\s*=\s*/i, "")
-        .replace(/^Bearer\s+/i, "")
+        .replace(/^MCP_BEARER_TOKEN\\s*=\\s*/i, "")
+        .replace(/^Bearer\\s+/i, "")
         .replace(/^["']+|["']+$/g, "")
         .trim();
     }
@@ -1359,7 +1542,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         throw new Error(
           "HTTP " +
             res.status +
-            " blocked by Edge/Auth. Try opening https://brain.tsimon.me/mcp?ui=1 or running .\\brain-dashboard.ps1 locally."
+            " blocked by Edge/Auth. Try opening https://brain.tsimon.me/mcp?ui=1 or running .\\\\brain-dashboard.ps1 locally."
         );
       }
 
@@ -1418,7 +1601,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         errBox.style.display = "block";
       } finally {
         btn.disabled = false;
-        btn.textContent = "🔓 Unlock Cognitive NOC Dashboard";
+        btn.textContent = "Unlock Cognitive NOC Dashboard";
       }
       return false;
     }
@@ -1472,10 +1655,10 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         renderMemoryTypesAndExplorer(data);
         renderSleepCycleAndAudit(data);
         document.getElementById("last-sync-label").textContent =
-          "Last synced: " + new Date().toLocaleTimeString();
+          "Synced: " + new Date().toLocaleTimeString();
       } finally {
         btn.disabled = false;
-        btn.textContent = "↻ Refresh Telemetry";
+        btn.textContent = "↻ Refresh";
       }
     }
 
@@ -1500,15 +1683,15 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       );
       setKpiValue(
         "kpi-graph",
-        t.activeEntities.toLocaleString() + " Nodes • " + t.activeEdges.toLocaleString() + " Edges"
+        t.activeEntities.toLocaleString() + " Nodes · " + t.activeEdges.toLocaleString() + " Edges"
       );
       setKpiValue("kpi-adrs", t.activeDecisions.toLocaleString());
       setKpiValue("kpi-d1", (t.d1ArchiveCount || 14422).toLocaleString() + " Docs");
       const pendingConf = Number(t.pendingConflicts || 0);
       setKpiValue(
         "kpi-conflicts",
-        pendingConf === 0 ? "0 Pending ✓" : pendingConf + " Pending ⚠️",
-        pendingConf === 0 ? "var(--emerald)" : "var(--amber)"
+        pendingConf === 0 ? "0 Pending" : pendingConf + " Pending",
+        pendingConf === 0 ? "var(--emerald-text)" : "var(--amber-text)"
       );
     }
 
@@ -1582,7 +1765,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
 
       const surfaceCards = [
         {
-          name: "💻 Google Antigravity IDE / 2.0",
+          name: "Google Antigravity IDE / 2.0",
           clientId: "antigravity-win11",
           badge: "badge-emerald",
           status: "CONNECTED (MCP v2)",
@@ -1592,13 +1775,13 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           lastTs: agStats.lastTs
         },
         {
-          name: "🍓 Raspberry Pi 5 Home Lab (node:rpi5)",
+          name: "Raspberry Pi 5 Home Lab (node:rpi5)",
           clientId: "rpi5-debian13-daemon / qdrant",
           badge: rpiPreserved.rpiSyncEnabled === false ? "badge-amber" : "badge-emerald",
-          status: rpiPreserved.rpiSyncEnabled === false ? "OFFLINE • GRAPH PRESERVED" : "CONNECTED • ACTIVE (EDGE SYNC)",
+          status: rpiPreserved.rpiSyncEnabled === false ? "OFFLINE · GRAPH PRESERVED" : "CONNECTED · EDGE SYNC",
           desc: (rpiPreserved.rpiSyncEnabled === false
             ? "RPI_SYNC_ENABLED=false while hardware is offline. "
-            : "RPI_SYNC_ENABLED=true • Debian 13 AST/Markdown watcher & Qdrant federation online. ") +
+            : "RPI_SYNC_ENABLED=true · Debian 13 AST/Markdown watcher & Qdrant federation online. ") +
                 rpiPreserved.preservedEntities + " RPi5/Qdrant entities & " +
                 rpiPreserved.preservedActiveEdges + " active edges linked (valid_until = NULL).",
           muts: rpiStats.muts,
@@ -1606,7 +1789,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           lastTs: rpiStats.lastTs
         },
         {
-          name: "🍓⌨️ Raspberry Pi 5 Gemini CLI",
+          name: "Raspberry Pi 5 Gemini CLI",
           clientId: "antigravity-cli-rpi5",
           badge: "badge-cyan",
           status: "CONNECTED (MCP v2)",
@@ -1616,7 +1799,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           lastTs: rpiCliStats.lastTs
         },
         {
-          name: "🌐 Gemini Web App Bridge",
+          name: "Gemini Web App Bridge",
           clientId: "gemini-web-architect",
           badge: "badge-violet",
           status: "OAUTH 2.1 + BRIDGE",
@@ -1626,17 +1809,17 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           lastTs: webStats.lastTs
         },
         {
-          name: "🌙 Nocturnal Dreamer (Llama 3.3 70B)",
+          name: "Nocturnal Dreamer (Llama 3.3 70B)",
           clientId: "nocturnal-consolidator",
           badge: "badge-cyan",
-          status: "03:00 AM ALARM SCHEDULED",
+          status: "03:00 AM SCHEDULED",
           desc: "Cloudflare Durable Object alarm() consolidating episodic logs & PageRank.",
           muts: sleepStats.muts,
           epis: (data.sleepCycle.consolidationRuns || []).length,
           lastTs: Math.max(sleepStats.lastTs || 0, latestConsolidationTs)
         },
         {
-          name: "⌨️ Gemini CLI Terminal (Win11)",
+          name: "Gemini CLI Terminal (Win11)",
           clientId: "gemini-cli-win11",
           badge: "badge-cyan",
           status: "CONNECTED (MCP v2)",
@@ -1661,13 +1844,11 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
               <span class="surface-name">\${escapeHtml(s.name)}</span>
               <span class="badge \${s.badge}">\${escapeHtml(s.status)}</span>
             </div>
-            <div style="font-size: 10.5px; color: var(--cyan); font-family: var(--font-mono); margin-bottom: 4px;">
-              clientId: \${escapeHtml(s.clientId)}
-            </div>
-            <div style="font-size: 11.5px; color: var(--text-2);">\${escapeHtml(s.desc)}</div>
+            <div class="surface-id">clientId: \${escapeHtml(s.clientId)}</div>
+            <div class="surface-desc">\${escapeHtml(s.desc)}</div>
             <div class="surface-meta">
               <span>Mutations: <strong>\${s.muts}</strong></span>
-              <span>Episodic Events: <strong>\${s.epis}</strong></span>
+              <span>Episodic: <strong>\${s.epis}</strong></span>
               <span>Last Activity: <strong>\${formatRelativeTime(s.lastTs)}</strong></span>
             </div>
           </div>
@@ -1719,10 +1900,8 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
                 <span class="surface-name">\${escapeHtml(db.name)}</span>
                 <span class="badge \${badgeCls}">\${escapeHtml(db.status)}</span>
               </div>
-              <div style="font-size: 11px; color: var(--cyan); font-family: var(--font-mono); margin-bottom: 4px;">
-                \${escapeHtml(db.engine)}
-              </div>
-              <div style="font-size: 11.5px; color: var(--text-2);">\${escapeHtml(db.details)}</div>
+              <div class="surface-id">\${escapeHtml(db.engine)}</div>
+              <div class="surface-desc">\${escapeHtml(db.details)}</div>
               <div class="surface-meta">
                 <span>Last Activity: <strong>\${formatRelativeTime(db.lastActivityAt)}</strong></span>
               </div>
@@ -1776,6 +1955,8 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
     let GRAPH_NODES = [];
     let GRAPH_EDGES = [];
     let CAM = { x: 0, y: 0, zoom: 1 };
+    let CANVAS_W = 800;
+    let CANVAS_H = 540;
     let DRAG_NODE = null;
     let IS_PANNING = false;
     let PAN_START = { x: 0, y: 0 };
@@ -1795,7 +1976,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       const rawEdges = (graphData && graphData.edges) || [];
 
       document.getElementById("graph-stats-badge").textContent =
-        rawNodes.length + " Nodes • " + rawEdges.length + " Active Edges";
+        rawNodes.length + " Nodes · " + rawEdges.length + " Active Edges";
 
       // Populate namespace dropdown in graph toolbar
       const namespaces = Array.from(new Set(rawNodes.map((n) => n.namespace || "global"))).sort();
@@ -1808,13 +1989,9 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           .join("");
       nsSelect.value = namespaces.includes(currentVal) ? currentVal : "all";
 
-      const canvas = document.getElementById("kg-canvas");
-      const rect = canvas.parentElement.getBoundingClientRect();
-      canvas.width = rect.width || 800;
-      canvas.height = rect.height || 540;
-
-      const cx = canvas.width / 2;
-      const cy = canvas.height / 2;
+      resizeCanvas();
+      const cx = CANVAS_W / 2;
+      const cy = CANVAS_H / 2;
 
       const nodeMap = new Map();
       GRAPH_NODES = rawNodes.map((n, i) => {
@@ -1875,8 +2052,11 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       if (!canvas || !canvas.parentElement) return;
       const rect = canvas.parentElement.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
-        canvas.width = rect.width;
-        canvas.height = rect.height;
+        const dpr = window.devicePixelRatio || 1;
+        CANVAS_W = rect.width;
+        CANVAS_H = rect.height;
+        canvas.width = Math.round(rect.width * dpr);
+        canvas.height = Math.round(rect.height * dpr);
       }
     }
     window.addEventListener("resize", resizeCanvas);
@@ -1884,8 +2064,9 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
     function tickGraphPhysics() {
       const canvas = document.getElementById("kg-canvas");
       const ctx = canvas.getContext("2d");
-      const w = canvas.width;
-      const h = canvas.height;
+      const dpr = window.devicePixelRatio || 1;
+      const w = CANVAS_W || canvas.width || 800;
+      const h = CANVAS_H || canvas.height || 540;
       const cx = w / 2;
       const cy = h / 2;
 
@@ -1940,8 +2121,18 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         n.y += n.vy;
       }
 
-      // Render Graph
+      // Render Graph (Swiss Carbon Dark)
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
+
+      // Subtle architectural dot grid
+      ctx.fillStyle = "rgba(255, 255, 255, 0.04)";
+      for (let gx = 20; gx < w; gx += 28) {
+        for (let gy = 20; gy < h; gy += 28) {
+          ctx.fillRect(gx, gy, 1, 1);
+        }
+      }
+
       ctx.save();
       ctx.translate(w / 2 + CAM.x, h / 2 + CAM.y);
       ctx.scale(CAM.zoom, CAM.zoom);
@@ -1958,15 +2149,15 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         ctx.beginPath();
         ctx.moveTo(e.source.x, e.source.y);
         ctx.lineTo(e.target.x, e.target.y);
-        ctx.strokeStyle = isSelectedEdge ? "#22d3ee" : "rgba(100, 116, 139, 0.28)";
-        ctx.lineWidth = isSelectedEdge ? 2 : 1;
+        ctx.strokeStyle = isSelectedEdge ? "rgba(250, 250, 250, 0.78)" : "rgba(255, 255, 255, 0.14)";
+        ctx.lineWidth = isSelectedEdge ? 1.8 : 1;
         ctx.stroke();
 
         if (isSelectedEdge || CAM.zoom > 1.35) {
           const mx = (e.source.x + e.target.x) / 2;
           const my = (e.source.y + e.target.y) / 2;
-          ctx.fillStyle = isSelectedEdge ? "#22d3ee" : "#64748b";
-          ctx.font = "9px JetBrains Mono, monospace";
+          ctx.fillStyle = isSelectedEdge ? "#fafafa" : "#a1a1aa";
+          ctx.font = "9.5px Consolas, ui-monospace, monospace";
           ctx.textAlign = "center";
           ctx.fillText(e.relation, mx, my - 3);
         }
@@ -1981,18 +2172,18 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         ctx.fill();
 
         if (isSelected || n.highlighted) {
-          ctx.lineWidth = 3;
-          ctx.strokeStyle = isSelected ? "#ffffff" : "#fbbf24";
+          ctx.lineWidth = 2.5;
+          ctx.strokeStyle = isSelected ? "#fafafa" : "#f59e0b";
           ctx.stroke();
         } else {
-          ctx.lineWidth = 1.2;
-          ctx.strokeStyle = "rgba(15, 23, 42, 0.9)";
+          ctx.lineWidth = 1.4;
+          ctx.strokeStyle = "#09090b";
           ctx.stroke();
         }
 
         // Node label
-        ctx.fillStyle = isSelected || n.highlighted ? "#ffffff" : "#cbd5e1";
-        ctx.font = (isSelected ? "bold " : "") + "10.5px Inter, sans-serif";
+        ctx.fillStyle = isSelected || n.highlighted ? "#fafafa" : "#d4d4d8";
+        ctx.font = (isSelected ? "600 " : "400 ") + '11px "Segoe UI Variable Text", "Segoe UI", sans-serif';
         ctx.textAlign = "center";
         ctx.fillText(n.canonical_name || n.entity_id, n.x, n.y + n.r + 12);
       }
@@ -2009,8 +2200,8 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         const rect = canvas.getBoundingClientRect();
         const sx = clientX - rect.left;
         const sy = clientY - rect.top;
-        const w = canvas.width;
-        const h = canvas.height;
+        const w = CANVAS_W || rect.width;
+        const h = CANVAS_H || rect.height;
         return {
           x: (sx - w / 2 - CAM.x) / CAM.zoom + w / 2,
           y: (sy - h / 2 - CAM.y) / CAM.zoom + h / 2
@@ -2079,32 +2270,32 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
 
       const inspector = document.getElementById("node-inspector");
       inspector.innerHTML = \`
-        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px; margin-bottom:6px;">
           <div>
             <span class="badge badge-cyan">\${escapeHtml(node.entity_type)}</span>
             <span class="badge badge-violet">\${escapeHtml(node.namespace)}</span>
-            <strong style="font-size:14px; margin-left:6px;">\${escapeHtml(node.canonical_name)}</strong>
-            <code style="font-size:11.5px; color:var(--text-2); margin-left:6px;">(\${escapeHtml(node.entity_id)})</code>
+            <strong style="font-family:var(--font-head); font-size:13.5px; margin-left:5px;">\${escapeHtml(node.canonical_name)}</strong>
+            <code style="font-size:11px; color:var(--text-2); margin-left:5px;">(\${escapeHtml(node.entity_id)})</code>
           </div>
-          <div style="font-family:var(--font-mono); font-size:12px;">
-            PageRank Score: <strong style="color:var(--emerald);">\${Number(node.pagerank_score || 0.15).toFixed(3)}</strong> •
-            Active Edges: <strong>\${connectedEdges.length}</strong>
+          <div style="font-family:var(--font-mono); font-size:11.5px; color:var(--text-2);">
+            PageRank: <strong style="color:var(--emerald-text);">\${Number(node.pagerank_score || 0.15).toFixed(3)}</strong> ·
+            Active Edges: <strong style="color:var(--text-0);">\${connectedEdges.length}</strong>
           </div>
         </div>
-        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap:8px; max-height:160px; overflow-y:auto;">
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap:6px; max-height:150px; overflow-y:auto;">
           \${
             connectedEdges.length === 0
-              ? '<div style="font-size:12px; color:var(--text-2);">No active edges linked to this entity.</div>'
+              ? '<div style="font-size:11.5px; color:var(--text-2);">No active edges linked to this entity.</div>'
               : connectedEdges
                   .map(
                     (e) => \`
-                    <div style="background:var(--bg-0); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-size:11.5px; font-family:var(--font-mono);">
+                    <div class="triple-chip">
                       <span style="color:var(--text-1);">\${escapeHtml(e.source_entity)}</span>
-                      <span style="color:var(--cyan);"> —[\${escapeHtml(e.relation)}]→ </span>
+                      <span style="color:var(--text-2);"> —[\${escapeHtml(e.relation)}]→ </span>
                       <span style="color:var(--text-1);">\${escapeHtml(e.target_entity)}</span>
                       \${
                         e.evidence_memory_id
-                          ? \`<div style="margin-top:4px;"><a href="javascript:void(0)" style="color:var(--emerald); text-decoration:underline;" onclick="inspectMemoryById('\${escapeHtml(e.evidence_memory_id)}')">Inspect Evidence Memory (\${escapeHtml(e.evidence_memory_id.slice(0, 12))}...)</a></div>\`
+                          ? \`<div style="margin-top:3px;"><a href="javascript:void(0)" style="color:var(--emerald-text); text-decoration:underline; text-underline-offset:2px;" onclick="inspectMemoryById('\${escapeHtml(e.evidence_memory_id)}')">Inspect Evidence (\${escapeHtml(e.evidence_memory_id.slice(0, 12))}...)</a></div>\`
                           : ""
                       }
                     </div>
@@ -2127,17 +2318,17 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
 
       const typeMeta = {
         semantic: {
-          title: "📘 Semantic Memories",
+          title: "Semantic Memories",
           badge: "badge-cyan",
           desc: "Permanent architectural facts, infrastructure topology, ports & domain knowledge."
         },
         procedural: {
-          title: "⚙️ Procedural Memories",
+          title: "Procedural Memories",
           badge: "badge-emerald",
           desc: "Runbooks, CLI workflows, deployment pipelines & troubleshooting playbooks."
         },
         episodic_summary: {
-          title: "🌙 Episodic Summaries",
+          title: "Episodic Summaries",
           badge: "badge-violet",
           desc: "Consolidated daily engineering digests synthesized at 03:00 AM by Llama 3.3 70B."
         }
@@ -2155,16 +2346,16 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
             <div class="type-stat-card \${isActive ? 'active' : ''}" onclick="setExplorerType('\${tKey}')">
               <div style="display:flex; justify-content:space-between; align-items:center;">
                 <span class="badge \${meta.badge}">\${tKey}</span>
-                <span style="font-size:11px; color:var(--text-2); font-family:var(--font-mono);">
-                  \${(stat.total_tokens || 0).toLocaleString()} tokens
+                <span style="font-size:10.5px; color:var(--text-2); font-family:var(--font-mono);">
+                  \${(stat.total_tokens || 0).toLocaleString()} tok
                 </span>
               </div>
               <div class="type-stat-num">\${(stat.count || 0).toLocaleString()}</div>
-              <div style="font-size:13px; font-weight:700; margin-bottom:4px;">\${meta.title}</div>
-              <div style="font-size:11.5px; color:var(--text-2); margin-bottom:8px;">\${meta.desc}</div>
-              <div style="font-size:11px; font-family:var(--font-mono); color:var(--text-1); display:flex; justify-content:space-between;">
-                <span>Avg Imp: <strong>\${Number(stat.avg_importance || 0).toFixed(2)}</strong></span>
-                <span>Recalls: <strong>\${stat.total_accesses || 0}</strong></span>
+              <div style="font-family:var(--font-head); font-size:13px; font-weight:600; margin-bottom:2px;">\${meta.title}</div>
+              <div style="font-size:11.5px; color:var(--text-2); margin-bottom:6px;">\${meta.desc}</div>
+              <div style="font-size:11px; font-family:var(--font-mono); color:var(--text-2); display:flex; justify-content:space-between;">
+                <span>Avg Imp: <strong style="color:var(--text-0);">\${Number(stat.avg_importance || 0).toFixed(2)}</strong></span>
+                <span>Recalls: <strong style="color:var(--text-0);">\${stat.total_accesses || 0}</strong></span>
               </div>
             </div>
           \`;
@@ -2175,15 +2366,15 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         <div class="type-stat-card" onclick="switchTab('tab-sleep', document.querySelector('[data-tab=tab-sleep]'))">
           <div style="display:flex; justify-content:space-between; align-items:center;">
             <span class="badge badge-amber">decisions (ADRs)</span>
-            <span style="font-size:11px; color:var(--text-2); font-family:var(--font-mono);">Immutable Rules</span>
+            <span style="font-size:10.5px; color:var(--text-2); font-family:var(--font-mono);">Immutable</span>
           </div>
           <div class="type-stat-num">\${(data.telemetry.activeDecisions || 0).toLocaleString()}</div>
-          <div style="font-size:13px; font-weight:700; margin-bottom:4px;">📜 Active ADRs</div>
-          <div style="font-size:11.5px; color:var(--text-2); margin-bottom:8px;">
+          <div style="font-family:var(--font-head); font-size:13px; font-weight:600; margin-bottom:2px;">Active ADRs</div>
+          <div style="font-size:11.5px; color:var(--text-2); margin-bottom:6px;">
             Deterministic Architecture Decision Records injected into every hybrid_recall compilation.
           </div>
-          <div style="font-size:11px; font-family:var(--font-mono); color:var(--cyan);">
-            Click to inspect ADR rules →
+          <div style="font-size:11px; font-family:var(--font-mono); color:var(--text-0);">
+            Inspect ADR rules →
           </div>
         </div>
       \`;
@@ -2245,17 +2436,17 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
                 </span>
               </td>
               <td style="font-family:var(--font-mono);">
-                <a href="javascript:void(0)" style="color:var(--text-0); text-decoration:underline;" onclick="setExplorerFilter('\${escapeHtml(ns)}', 'semantic')">
+                <a href="javascript:void(0)" style="color:var(--text-0); text-decoration:underline; text-underline-offset:2px;" onclick="setExplorerFilter('\${escapeHtml(ns)}', 'semantic')">
                   \${row.semantic}
                 </a>
               </td>
               <td style="font-family:var(--font-mono);">
-                <a href="javascript:void(0)" style="color:var(--text-0); text-decoration:underline;" onclick="setExplorerFilter('\${escapeHtml(ns)}', 'procedural')">
+                <a href="javascript:void(0)" style="color:var(--text-0); text-decoration:underline; text-underline-offset:2px;" onclick="setExplorerFilter('\${escapeHtml(ns)}', 'procedural')">
                   \${row.procedural}
                 </a>
               </td>
               <td style="font-family:var(--font-mono);">
-                <a href="javascript:void(0)" style="color:var(--text-0); text-decoration:underline;" onclick="setExplorerFilter('\${escapeHtml(ns)}', 'episodic_summary')">
+                <a href="javascript:void(0)" style="color:var(--text-0); text-decoration:underline; text-underline-offset:2px;" onclick="setExplorerFilter('\${escapeHtml(ns)}', 'episodic_summary')">
                   \${row.episodic_summary}
                 </a>
               </td>
@@ -2265,7 +2456,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
               <td style="font-family:var(--font-mono);">\${row.total_accesses}</td>
               <td>
                 <button class="btn btn-sm" onclick="setExplorerNamespace('\${escapeHtml(ns)}')">
-                  Filter Vault (\${row.total_count})
+                  Filter (\${row.total_count})
                 </button>
               </td>
             </tr>
@@ -2331,7 +2522,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       const grid = document.getElementById("memories-explorer-grid");
       if (filtered.length === 0) {
         grid.innerHTML =
-          '<div style="color:var(--text-2); font-size:13px; padding:16px;">No memories match the active namespace/type/keyword filter.</div>';
+          '<div class="empty-state">No memories match the active namespace/type/keyword filter.</div>';
         return;
       }
 
@@ -2347,24 +2538,24 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
             <div class="memory-card">
               <div>
                 <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap;">
-                  <div style="display:flex; gap:6px; align-items:center;">
+                  <div style="display:flex; gap:5px; align-items:center;">
                     <span class="badge badge-slate">\${escapeHtml(m.namespace)}</span>
                     <span class="badge \${typeBadge}">\${escapeHtml(m.memory_type)}</span>
                   </div>
-                  <span style="font-size:11px; color:var(--text-2); font-family:var(--font-mono);">
+                  <span style="font-size:10.5px; color:var(--text-2); font-family:var(--font-mono);">
                     \${formatRelativeTime(m.updated_at)}
                   </span>
                 </div>
                 <div class="memory-title">\${escapeHtml(m.title)}</div>
-                <div style="font-size:11px; color:var(--text-3); font-family:var(--font-mono); margin:4px 0 8px;">
-                  ID: \${escapeHtml(m.id)} \${m.source_uri ? "• URI: " + escapeHtml(m.source_uri) : ""}
+                <div style="font-size:10.5px; color:var(--text-2); font-family:var(--font-mono); margin:2px 0 6px;">
+                  ID: \${escapeHtml(m.id)} \${m.source_uri ? "· URI: " + escapeHtml(m.source_uri) : ""}
                 </div>
                 <div class="memory-preview">\${escapeHtml(m.content)}</div>
               </div>
-              <div style="display:flex; justify-content:space-between; align-items:center; padding-top:6px; border-top:1px solid var(--border); font-size:11.5px; font-family:var(--font-mono); color:var(--text-2);">
-                <span>\${m.token_count} tok • Imp: \${Number(m.importance).toFixed(2)} • Recalls: \${m.access_count}</span>
+              <div style="display:flex; justify-content:space-between; align-items:center; padding-top:5px; border-top:1px solid var(--border); font-size:11px; font-family:var(--font-mono); color:var(--text-2);">
+                <span>\${m.token_count} tok · Imp \${Number(m.importance).toFixed(2)} · \${m.access_count} recalls</span>
                 <button class="btn btn-sm" onclick="inspectMemoryById('\${escapeHtml(m.id)}')">
-                  🔎 Inspect Full
+                  Inspect Full
                 </button>
               </div>
             </div>
@@ -2384,7 +2575,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
 
       document.getElementById("modal-title").textContent = "[" + m.namespace + "] " + m.title;
       document.getElementById("modal-content").innerHTML = \`
-        <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px;">
+        <div style="display:flex; flex-wrap:wrap; gap:5px; margin-bottom:10px;">
           <span class="badge badge-cyan">Namespace: \${escapeHtml(m.namespace)}</span>
           <span class="badge badge-emerald">Type: \${escapeHtml(m.memory_type)}</span>
           <span class="badge badge-violet">Tokens: \${m.token_count}</span>
@@ -2392,27 +2583,27 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
           <span class="badge badge-slate">Confidence: \${Number(m.confidence).toFixed(2)}</span>
           <span class="badge badge-slate">Recalls: \${m.access_count}</span>
         </div>
-        <div style="font-size:12px; color:var(--text-2); font-family:var(--font-mono); margin-bottom:12px;">
+        <div style="font-size:11.5px; color:var(--text-2); font-family:var(--font-mono); margin-bottom:10px;">
           <div><strong>Memory ID:</strong> \${escapeHtml(m.id)}</div>
           <div><strong>Source URI:</strong> \${escapeHtml(m.source_uri || "N/A")}</div>
           <div><strong>Updated:</strong> \${formatIsoShort(m.updated_at)} (\${formatRelativeTime(m.updated_at)})</div>
         </div>
-        <div style="font-size:12px; font-weight:700; text-transform:uppercase; color:var(--text-2); margin-bottom:6px;">
+        <div class="filter-heading" style="margin-bottom:5px;">
           Full Memory Content
         </div>
         <pre class="code-block">\${escapeHtml(m.content)}</pre>
         \${
           linkedEdges.length > 0
             ? \`
-              <div style="font-size:12px; font-weight:700; text-transform:uppercase; color:var(--text-2); margin:14px 0 6px;">
+              <div class="filter-heading" style="margin:10px 0 5px;">
                 Linked Knowledge Graph Triples (\${linkedEdges.length})
               </div>
-              <div style="display:grid; gap:6px;">
+              <div style="display:grid; gap:5px;">
                 \${linkedEdges
                   .map(
                     (e) => \`
-                    <div style="background:var(--bg-0); border:1px solid var(--border); padding:7px 10px; border-radius:6px; font-family:var(--font-mono); font-size:12px;">
-                      \${escapeHtml(e.source_entity)} <span style="color:var(--cyan);">—[\${escapeHtml(e.relation)}]→</span> \${escapeHtml(e.target_entity)}
+                    <div class="triple-chip">
+                      \${escapeHtml(e.source_entity)} <span style="color:var(--text-2);">—[\${escapeHtml(e.relation)}]→</span> \${escapeHtml(e.target_entity)}
                     </div>
                   \`
                   )
@@ -2441,37 +2632,37 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       const container = document.getElementById("recall-results-container");
 
       btn.disabled = true;
-      btn.textContent = "⏳ Running 4-Way Federated RRF + Cross-Encoder...";
+      btn.textContent = "Running 4-Way Federated RRF + Cross-Encoder...";
 
       try {
         const res = await apiNocCall("recall", { query, namespace, tokenBudget });
 
         const candidates = res.candidates || [];
         container.innerHTML = \`
-          <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px;">
+          <div style="display:flex; flex-wrap:wrap; gap:5px; margin-bottom:8px;">
             <span class="badge badge-emerald">Packed: \${res.tokensUsed} / \${res.tokenBudget} tok</span>
-            <span class="badge badge-cyan">Brain Hits: \${res.brainCount}</span>
-            <span class="badge badge-violet">D1 KB Hits: \${res.kbCount}</span>
-            <span class="badge badge-amber">1-Hop Triples: \${res.graphTriplesCount}</span>
+            <span class="badge badge-cyan">Brain: \${res.brainCount}</span>
+            <span class="badge badge-violet">D1 KB: \${res.kbCount}</span>
+            <span class="badge badge-amber">1-Hop: \${res.graphTriplesCount}</span>
           </div>
 
-          <div style="font-size:11.5px; font-weight:700; color:var(--text-1); margin-bottom:8px; text-transform:uppercase;">
-            Fused Candidate Ranking Breakdown (\${candidates.length} Candidates)
+          <div class="filter-heading" style="margin-bottom:6px;">
+            Fused Candidate Ranking (\${candidates.length})
           </div>
-          <div style="max-height:280px; overflow-y:auto; margin-bottom:12px;">
+          <div style="max-height:260px; overflow-y:auto; margin-bottom:8px;">
             \${candidates
               .slice(0, 10)
               .map(
                 (c, idx) => \`
-                <div style="background:var(--bg-0); border:1px solid var(--border); border-radius:8px; padding:9px 11px; margin-bottom:7px;">
+                <div class="rrf-item">
                   <div style="display:flex; justify-content:space-between; gap:6px; align-items:center;">
                     <strong style="font-size:12px; color:var(--text-0);">#\${idx + 1} \${escapeHtml(c.title)} \${c.memoryType === 'episodic_summary' ? '<span class="badge badge-amber" style="font-size:9.5px; margin-left:4px;">DIGEST</span>' : ''}</strong>
                     <span class="badge \${c.origin === 'brain.tsimon.me' ? 'badge-cyan' : 'badge-violet'}">\${escapeHtml(c.origin)}</span>
                   </div>
-                  <div style="font-size:11px; font-family:var(--font-mono); color:var(--text-2); margin-top:5px; display:flex; flex-wrap:wrap; gap:8px;">
-                    <span>Score: <strong style="color:var(--emerald);">\${Number(c.rrfScore || 0).toFixed(4)}</strong></span>
-                    \${c.rerankScore !== undefined ? \`<span>Reranker: <strong style="color:var(--cyan);">\${Number(c.rerankScore).toFixed(3)}</strong></span>\` : ""}
-                    <span>Signals: <strong>\${escapeHtml((c.sources || [c.source]).join("+"))}</strong></span>
+                  <div style="font-size:11px; font-family:var(--font-mono); color:var(--text-2); margin-top:4px; display:flex; flex-wrap:wrap; gap:8px;">
+                    <span>Score: <strong style="color:var(--emerald-text);">\${Number(c.rrfScore || 0).toFixed(4)}</strong></span>
+                    \${c.rerankScore !== undefined ? \`<span>Rerank: <strong style="color:var(--text-0);">\${Number(c.rerankScore).toFixed(3)}</strong></span>\` : ""}
+                    <span>Signals: <strong style="color:var(--text-1);">\${escapeHtml((c.sources || [c.source]).join("+"))}</strong></span>
                     \${c.explanation?.modifiers ? \`<span>Imp:<strong>\${c.explanation.modifiers.importance}</strong> Conf:<strong>\${c.explanation.modifiers.confidence}</strong> Decay:<strong>\${c.explanation.modifiers.decayFactor}</strong> (\${c.explanation.modifiers.ageDays}d)</span>\` : ""}
                   </div>
                 </div>
@@ -2480,20 +2671,20 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
               .join("")}
           </div>
 
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-            <span style="font-size:11.5px; font-weight:700; color:var(--text-1); text-transform:uppercase;">Compiled &lt;brain_context&gt; Output</span>
-            <button class="btn btn-sm" onclick="navigator.clipboard.writeText(window.__LAST_COMPILED_CONTEXT || ''); this.textContent='✓ Copied!'">
-              📋 Copy Context
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+            <span class="filter-heading" style="margin-bottom:0;">Compiled &lt;brain_context&gt; Output</span>
+            <button class="btn btn-sm" onclick="navigator.clipboard.writeText(window.__LAST_COMPILED_CONTEXT || ''); this.textContent='Copied'">
+              Copy Context
             </button>
           </div>
-          <pre class="code-block" style="max-height:240px;">\${escapeHtml(res.compiledMarkdown || "")}</pre>
+          <pre class="code-block" style="max-height:220px;">\${escapeHtml(res.compiledMarkdown || "")}</pre>
         \`;
         window.__LAST_COMPILED_CONTEXT = res.compiledMarkdown || "";
       } catch (err) {
         container.innerHTML = \`<div class="auth-error" style="display:block;">\${escapeHtml(err.message)}</div>\`;
       } finally {
         btn.disabled = false;
-        btn.textContent = "⚡ Execute 4-Way Federated Recall";
+        btn.textContent = "Execute 4-Way Federated Recall";
       }
     }
 
@@ -2512,7 +2703,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       const confBadge = document.getElementById("conflicts-count-badge");
       if (confBadge) {
         confBadge.textContent =
-          pendingConflicts.length + " Pending • " + (conflicts.length - pendingConflicts.length) + " Resolved";
+          pendingConflicts.length + " Pending · " + (conflicts.length - pendingConflicts.length) + " Resolved";
         confBadge.className = "badge " + (pendingConflicts.length > 0 ? "badge-amber" : "badge-emerald");
       }
 
@@ -2530,7 +2721,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       if (confContainer) {
         confContainer.innerHTML =
           conflicts.length === 0
-            ? '<div style="font-size:12.5px; color:var(--emerald);">✓ No semantic or Knowledge Graph contradictions detected. Click "🔍 Run Contradiction Audit Now" to compare recent memories against existing semantic triples and ADRs.</div>'
+            ? '<div class="empty-state" style="color:var(--emerald-text);">No semantic or Knowledge Graph contradictions detected. Click "Run Contradiction Audit" to compare recent memories against existing semantic triples and ADRs.</div>'
             : conflicts
                 .map((c) => {
                   const isPending = c.status === "pending";
@@ -2543,42 +2734,42 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
                   const oldRef = c.existing_memory_id || c.existing_edge_id || c.existing_decision_id || "unknown";
                   const newRef = c.new_memory_id || c.new_edge_id || "latest";
                   return \`
-                    <div class="surface-card" style="border-color: \${isPending ? 'rgba(245, 158, 11, 0.45)' : 'var(--border)'};">
+                    <div class="surface-card \${isPending ? 'conflict-pending' : ''}">
                       <div class="surface-top">
-                        <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+                        <div style="display:flex; flex-wrap:wrap; gap:5px; align-items:center;">
                           <span class="badge \${isPending ? 'badge-amber' : 'badge-emerald'}">
-                            \${isPending ? '⚠️ PENDING TRIAGE' : '✓ RESOLVED (' + escapeHtml((c.resolution_action || '').toUpperCase()) + ')'}
+                            \${isPending ? 'PENDING TRIAGE' : 'RESOLVED (' + escapeHtml((c.resolution_action || '').toUpperCase()) + ')'}
                           </span>
                           <span class="badge \${sevBadge}">\${escapeHtml(c.severity.toUpperCase())}</span>
                           <span class="badge badge-cyan">\${escapeHtml(c.conflict_type)}</span>
                           <span class="badge badge-slate">\${escapeHtml(c.namespace)}</span>
                           <strong style="font-size:12.5px;">Conflict #\${c.conflict_id}</strong>
                           <span style="font-size:11px; color:var(--text-2); font-family:var(--font-mono);">
-                            Recommended: <strong style="color:var(--cyan);">\${escapeHtml(c.suggested_action)}</strong> • \${formatRelativeTime(c.created_at)}
+                            Recommended: <strong style="color:var(--text-0);">\${escapeHtml(c.suggested_action)}</strong> · \${formatRelativeTime(c.created_at)}
                           </span>
                         </div>
                         \${
                           isPending
                             ? \`
-                              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                              <div style="display:flex; gap:5px; flex-wrap:wrap;">
                                 <button class="btn btn-sm" onclick="resolveConflictById(\${c.conflict_id}, 'keep')" title="Keep existing memory/triple as authoritative">
-                                  ✓ Keep Existing
+                                  Keep Existing
                                 </button>
                                 <button class="btn btn-sm btn-amber" onclick="resolveConflictById(\${c.conflict_id}, 'supersede')" title="Supersede old memory/triple & clean Vectorize">
-                                  ⚡ Supersede Old
+                                  Supersede Old
                                 </button>
                                 <button class="btn btn-sm btn-emerald" onclick="resolveConflictById(\${c.conflict_id}, 'merge')" title="Synthesize old + new into updated memory">
-                                  🔀 Merge Both
+                                  Merge Both
                                 </button>
                               </div>
                             \`
                             : \`<span style="font-size:11px; color:var(--text-2); font-family:var(--font-mono);">by \${escapeHtml(c.resolved_by || 'operator')}</span>\`
                         }
                       </div>
-                      <div style="font-size:12px; color:var(--text-0); margin:6px 0;">
+                      <div style="font-size:12px; color:var(--text-1); margin:4px 0;">
                         <strong>Why Flagged:</strong> \${escapeHtml(c.reason)}
                       </div>
-                      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:8px;">
+                      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:6px;">
                         <div class="diff-box diff-old" style="margin-top:0;">- EXISTING (\${escapeHtml(oldRef)}): \${escapeHtml(c.existing_title || "")}<br/>\${escapeHtml(c.existing_snippet || "")}</div>
                         <div class="diff-box diff-new" style="margin-top:0;">+ NEW (\${escapeHtml(newRef)}): \${escapeHtml(c.new_title || "")}<br/>\${escapeHtml(c.new_snippet || "")}</div>
                       </div>
@@ -2591,24 +2782,24 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       // 1. Episodic Logs
       document.getElementById("episodic-logs-container").innerHTML =
         pendingLogs.length === 0
-          ? '<div style="font-size:12px; color:var(--text-2);">No episodic logs recorded yet.</div>'
+          ? '<div class="empty-state">No episodic logs recorded yet.</div>'
           : pendingLogs
               .map(
                 (l) => \`
                 <div class="surface-card">
                   <div class="surface-top">
-                    <div>
+                    <div style="display:flex; flex-wrap:wrap; gap:5px; align-items:center;">
                       <span class="badge \${l.consolidated ? 'badge-slate' : 'badge-amber'}">
                         \${l.consolidated ? 'CONSOLIDATED' : 'PENDING 03:00 AM'}
                       </span>
                       <span class="badge badge-cyan">\${escapeHtml(l.event_type)}</span>
-                      <code style="font-size:11.5px; color:var(--text-1); margin-left:6px;">\${escapeHtml(l.client_id)}</code>
+                      <code style="font-size:11px; color:var(--text-1);">\${escapeHtml(l.client_id)}</code>
                     </div>
-                    <span style="font-size:11px; color:var(--text-2); font-family:var(--font-mono);">
-                      #\${l.log_id} • \${formatRelativeTime(l.created_at)}
+                    <span style="font-size:10.5px; color:var(--text-2); font-family:var(--font-mono);">
+                      #\${l.log_id} · \${formatRelativeTime(l.created_at)}
                     </span>
                   </div>
-                  <div class="memory-preview" style="margin-top:6px;">\${escapeHtml(l.payload)}</div>
+                  <div class="memory-preview" style="margin-top:5px;">\${escapeHtml(l.payload)}</div>
                 </div>
               \`
               )
@@ -2617,17 +2808,17 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       // 2. Consolidation Runs
       document.getElementById("consolidation-runs-container").innerHTML =
         runs.length === 0
-          ? '<div style="font-size:12px; color:var(--text-2);">No nocturnal consolidation runs recorded yet.</div>'
+          ? '<div class="empty-state">No nocturnal consolidation runs recorded yet.</div>'
           : runs
               .map(
                 (r) => \`
                 <div class="surface-card">
                   <div class="surface-top">
                     <span class="surface-name">\${escapeHtml(r.digest_title || "Nocturnal Digest Run #" + r.run_id)}</span>
-                    <span class="badge badge-violet">\${escapeHtml(r.trigger_source)} • \${r.events_count} events</span>
+                    <span class="badge badge-violet">\${escapeHtml(r.trigger_source)} · \${r.events_count} events</span>
                   </div>
-                  <div style="font-size:11px; color:var(--text-2); font-family:var(--font-mono); margin-bottom:6px;">
-                    \${formatIsoShort(r.created_at)} • Clients: \${escapeHtml(r.clients_json)}
+                  <div class="surface-id" style="margin-bottom:5px;">
+                    \${formatIsoShort(r.created_at)} · Clients: \${escapeHtml(r.clients_json)}
                   </div>
                   <div class="memory-preview">\${escapeHtml(r.digest_content || "")}</div>
                 </div>
@@ -2638,7 +2829,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       // 3. Mutations & Diff Rollback
       document.getElementById("mutations-container").innerHTML =
         mutations.length === 0
-          ? '<div style="font-size:12px; color:var(--text-2);">No mutations recorded yet.</div>'
+          ? '<div class="empty-state">No mutations recorded yet.</div>'
           : mutations
               .map((m) => {
                 const opBadge =
@@ -2652,18 +2843,18 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
                 return \`
                   <div class="surface-card">
                     <div class="surface-top">
-                      <div>
+                      <div style="display:flex; flex-wrap:wrap; gap:5px; align-items:center;">
                         <span class="badge \${opBadge}">\${escapeHtml(m.operation)}</span>
                         <span class="badge badge-slate">\${escapeHtml(m.namespace)}</span>
-                        <strong style="font-size:12.5px; margin-left:6px;">\${escapeHtml(m.new_title || m.old_title || m.memory_id)}</strong>
+                        <strong style="font-size:12px; color:var(--text-0);">\${escapeHtml(m.new_title || m.old_title || m.memory_id)}</strong>
                       </div>
                       <div style="display:flex; gap:6px; align-items:center;">
-                        <span style="font-size:11px; color:var(--text-2); font-family:var(--font-mono);">
-                          #\${m.mutation_id} by \${escapeHtml(m.client_id)} • \${formatRelativeTime(m.created_at)}
+                        <span style="font-size:10.5px; color:var(--text-2); font-family:var(--font-mono);">
+                          #\${m.mutation_id} by \${escapeHtml(m.client_id)} · \${formatRelativeTime(m.created_at)}
                         </span>
                         \${
                           m.rolled_back === 0 && m.operation !== "ROLLBACK"
-                            ? \`<button class="btn btn-sm btn-rose" onclick="rollbackMutationById(\${m.mutation_id})">⏪ Rollback</button>\`
+                            ? \`<button class="btn btn-sm btn-rose" onclick="rollbackMutationById(\${m.mutation_id})">Rollback</button>\`
                             : \`<span class="badge badge-rose">ROLLED BACK</span>\`
                         }
                       </div>
@@ -2686,7 +2877,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       // 4. Active ADRs
       document.getElementById("adrs-container").innerHTML =
         adrs.length === 0
-          ? '<div style="font-size:12px; color:var(--text-2);">No active ADRs found.</div>'
+          ? '<div class="empty-state">No active ADRs found.</div>'
           : adrs
               .map(
                 (a) => \`
@@ -2695,10 +2886,10 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
                     <span class="surface-name">[\${escapeHtml(a.decision_id)}] \${escapeHtml(a.title)}</span>
                     <span class="badge badge-emerald">\${escapeHtml(a.namespace)}</span>
                   </div>
-                  <div style="font-size:12px; color:var(--text-0); margin-top:6px;">
-                    <strong>Decision:</strong> \${escapeHtml(a.decision)}
+                  <div style="font-size:12px; color:var(--text-1); margin-top:4px;">
+                    <strong style="color:var(--text-0);">Decision:</strong> \${escapeHtml(a.decision)}
                   </div>
-                  <div style="font-size:11.5px; color:var(--text-2); margin-top:4px;">
+                  <div style="font-size:11.5px; color:var(--text-2); margin-top:3px;">
                     <strong>Rationale:</strong> \${escapeHtml(a.rationale)}
                   </div>
                 </div>
@@ -2710,7 +2901,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
     async function triggerConsolidationNow() {
       const btn = document.getElementById("btn-consolidate");
       btn.disabled = true;
-      btn.textContent = "🌙 Consolidating...";
+      btn.textContent = "Consolidating...";
       try {
         const res = await apiNocCall("consolidate", { triggerSource: "dashboard_noc" });
         alert(
@@ -2728,7 +2919,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         alert("Consolidation error: " + err.message);
       } finally {
         btn.disabled = false;
-        btn.textContent = "🌙 Run Sleep Cycle Now";
+        btn.textContent = "Sleep Cycle";
       }
     }
 
@@ -2736,7 +2927,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       const btn = document.getElementById("btn-audit-conflicts");
       if (btn) {
         btn.disabled = true;
-        btn.textContent = "⏳ Auditing Contradictions...";
+        btn.textContent = "Auditing...";
       }
       try {
         const res = await apiNocCall("audit_conflicts", { hours: 24, limit: 5 });
@@ -2755,7 +2946,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
       } finally {
         if (btn) {
           btn.disabled = false;
-          btn.textContent = "🔍 Run Contradiction Audit Now";
+          btn.textContent = "Run Contradiction Audit";
         }
       }
     }
@@ -2785,7 +2976,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
     async function triggerReindexNow() {
       const btn = document.getElementById("btn-reindex");
       btn.disabled = true;
-      btn.textContent = "⚡ Reindexing...";
+      btn.textContent = "Reindexing...";
       try {
         const res = await apiNocCall("reindex", { rebuildFts: true, hours: 720, limit: 50 });
         alert(
@@ -2798,7 +2989,7 @@ export function renderDashboardHtml(primaryDomain = "tsimon.me", version = "1.7.
         alert("Reindex error: " + err.message);
       } finally {
         btn.disabled = false;
-        btn.textContent = "⚡ Reindex FTS5/Vectors";
+        btn.textContent = "Reindex";
       }
     }
 

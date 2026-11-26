@@ -204,6 +204,24 @@ describe("Cognitive NOC Dashboard layout (src/dashboard.ts)", () => {
     expect(databasesHtml).toContain("Last Activity:");
   });
 
+  it("uses Swiss Carbon Dark tokens, Bahnschrift/Segoe UI Variable/Consolas fonts, Ultra-Tight Flush layout, and zero legacy dark-blue styles", () => {
+    expect(html).toContain("--bg-0: #09090b;");
+    expect(html).toContain("--bg-1: #111113;");
+    expect(html).toContain("--bg-2: #18181b;");
+    expect(html).toContain('--font-head: "Bahnschrift", "Segoe UI Variable Display"');
+    expect(html).toContain('--font-body: "Segoe UI Variable Text"');
+    expect(html).toContain('--font-mono: "Consolas", ui-monospace');
+    expect(html).toMatch(/\.panel-body\s*\{\s*padding:\s*0;\s*\}/s);
+    expect(html).toMatch(/\.badge-emerald::before[\s\S]*?border-radius:\s*50%;/s);
+    // Ensure legacy dark-blue hexes and radial gradients are completely removed
+    expect(html).not.toContain("#060911");
+    expect(html).not.toContain("#0b1120");
+    expect(html).not.toContain("#0f172a");
+    expect(html).not.toContain("#111827");
+    expect(html).not.toContain("#1e293b");
+    expect(html).not.toContain("radial-gradient(");
+  });
+
   it("contains syntactically valid inline dashboard script", () => {
     const script = extractDashboardScript(html);
     expect(() => new Function(script)).not.toThrow();
