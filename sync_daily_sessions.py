@@ -33,7 +33,6 @@ STATE_FILE = pathlib.Path.home() / ".gemini" / "brain_synced_sessions.json"
 
 # Automated sidecar prompts to ignore so scheduled maintenance jobs do not self-log noise
 IGNORED_PROMPT_PATTERNS = [
-    "Rebuild the local static HTML website at G:\\My Drive\\Workspaces\\Obsidian",
     "Run the nightly Gemini Brain session harvester",
     "sync_daily_sessions.py",
 ]
