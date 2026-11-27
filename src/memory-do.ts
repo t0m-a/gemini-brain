@@ -5003,6 +5003,218 @@ export class BrainMemoryDO extends DurableObject<Env> {
   }
 
   /**
+   * Disaster Recovery RPC 1: Capture 30-day Durable Object SQLite PITR Bookmark + Table Row Counts
+   */
+  async getPitrBookmark(params: { atTimestampMs?: number } = {}) {
+    const storageAny = this.ctx.storage as unknown as {
+      getCurrentBookmark?: () => Promise<string>;
+      getBookmarkForTime?: (ts: number | Date) => Promise<string>;
+    };
+
+    let bookmark: string | null = null;
+    let pitrSupported = false;
+    if (typeof params.atTimestampMs === "number" && Number.isFinite(params.atTimestampMs)) {
+      if (typeof storageAny.getBookmarkForTime === "function") {
+        pitrSupported = true;
+        bookmark = await storageAny.getBookmarkForTime(params.atTimestampMs);
+      }
+    } else if (typeof storageAny.getCurrentBookmark === "function") {
+      pitrSupported = true;
+      bookmark = await storageAny.getCurrentBookmark();
+    }
+
+    const coreTables = [
+      "memories",
+      "entities",
+      "edges",
+      "decisions",
+      "episodic_logs",
+      "memory_mutations",
+      "consolidation_runs",
+      "memory_conflicts",
+      "outcomes",
+      "memory_validations"
+    ] as const;
+
+    const tableCounts: Record<string, number> = {};
+    for (const tbl of coreTables) {
+      tableCounts[tbl] = this.sql.exec<{ count: number }>(`SELECT COUNT(*) AS count FROM ${tbl}`).one().count;
+    }
+
+    return {
+      ok: true,
+      objectName: "thomas-simon-primary-brain",
+      capturedAtIso: new Date().toISOString(),
+      pitrSupported,
+      bookmark,
+      tableCounts
+    };
+  }
+
+  /**
+   * Disaster Recovery RPC 2: Schedule 30-day In-Place SQLite PITR Rollback
+   */
+  async restorePitrBookmark(params: {
+    bookmark?: string;
+    confirm?: string;
+    abortNow?: boolean;
+  }) {
+    if (params.confirm !== "CONFIRM_PITR_RESTORE") {
+      return {
+        ok: false,
+        error: "Confirmation required: pass confirm='CONFIRM_PITR_RESTORE'."
+      };
+    }
+    const targetBookmark = String(params.bookmark || "").trim();
+    if (!targetBookmark || targetBookmark.length > 256 || !/^[A-Za-z0-9._-]+$/.test(targetBookmark)) {
+      return {
+        ok: false,
+        error: "Invalid or missing PITR bookmark."
+      };
+    }
+
+    const storageAny = this.ctx.storage as unknown as {
+      getCurrentBookmark?: () => Promise<string>;
+      onNextSessionRestoreBookmark?: (bm: string) => Promise<string>;
+    };
+
+    if (typeof storageAny.onNextSessionRestoreBookmark !== "function") {
+      return {
+        ok: false,
+        error: "Durable Object PITR restore API is unavailable in this runtime."
+      };
+    }
+
+    const preRestoreBookmark =
+      typeof storageAny.getCurrentBookmark === "function"
+        ? await storageAny.getCurrentBookmark()
+        : null;
+
+    const scheduledBookmark = await storageAny.onNextSessionRestoreBookmark(targetBookmark);
+
+    if (params.abortNow === true) {
+      this.ctx.abort("Operator-confirmed PITR restore");
+    }
+
+    return {
+      ok: true,
+      preRestoreBookmark,
+      targetBookmark,
+      scheduledBookmark,
+      mode: params.abortNow === true ? "aborted_for_immediate_restore" : "scheduled_on_next_session"
+    };
+  }
+
+  /**
+   * Disaster Recovery RPC 3: Idempotent Logical Batch Table Restore from Encrypted SQLite Backup
+   * Used for >30-day recovery or full namespace/account rebuilds where raw main.sqlite upload is unavailable.
+   */
+  async restoreTableBatch(params: {
+    table: string;
+    rows: Record<string, unknown>[];
+    rebuildFts?: boolean;
+  }) {
+    const ALLOWED_TABLES: Record<string, readonly string[]> = {
+      memories: [
+        "id", "namespace", "memory_type", "title", "content", "summary", "source_uri",
+        "token_count", "importance", "confidence", "access_count", "superseded_by",
+        "metadata_json", "created_at", "updated_at", "last_accessed_at"
+      ],
+      entities: [
+        "entity_id", "namespace", "entity_type", "canonical_name", "description",
+        "pagerank_score", "attributes_json", "updated_at"
+      ],
+      edges: [
+        "edge_id", "namespace", "source_entity", "relation", "target_entity",
+        "weight", "evidence_memory_id", "valid_from", "valid_until"
+      ],
+      decisions: [
+        "decision_id", "namespace", "title", "decision", "rationale",
+        "status", "superseded_by", "created_at"
+      ],
+      episodic_logs: [
+        "log_id", "session_id", "client_id", "event_type", "payload", "consolidated", "created_at"
+      ],
+      memory_mutations: [
+        "mutation_id", "memory_id", "namespace", "memory_type", "operation", "client_id",
+        "old_title", "old_content", "old_summary", "old_importance",
+        "new_title", "new_content", "new_summary", "new_importance",
+        "source_uri", "rolled_back", "created_at"
+      ],
+      consolidation_runs: [
+        "run_id", "digest_memory_id", "events_count", "clients_json", "log_ids_json",
+        "digest_title", "digest_content", "trigger_source", "created_at"
+      ],
+      memory_conflicts: [
+        "conflict_id", "run_id", "namespace", "conflict_type", "severity",
+        "existing_memory_id", "existing_title", "existing_snippet", "existing_edge_id", "existing_decision_id",
+        "new_memory_id", "new_title", "new_snippet", "new_edge_id",
+        "reason", "suggested_action", "merged_content_proposal",
+        "status", "resolution_action", "resolved_by", "created_at", "resolved_at"
+      ],
+      outcomes: [
+        "outcome_id", "session_id", "namespace", "task_type", "query", "status",
+        "result_summary", "failed_attempts", "cited_memory_ids_json", "verifier",
+        "evidence_uri", "operator_feedback", "client_id", "created_at"
+      ],
+      memory_validations: [
+        "validation_id", "memory_id", "verdict", "previous_confidence", "new_confidence",
+        "evidence_uri", "notes", "client_id", "observed_at", "created_at"
+      ]
+    };
+
+    const table = String(params.table || "").trim();
+    const allowedCols = ALLOWED_TABLES[table];
+    if (!allowedCols) {
+      return { ok: false, error: `Unsupported restore table: ${table}` };
+    }
+
+    const rows = Array.isArray(params.rows) ? params.rows : [];
+    if (rows.length > 500) {
+      return { ok: false, error: "Batch too large: maximum 500 rows per restore-batch call." };
+    }
+
+    let restored = 0;
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec("PRAGMA foreign_keys = OFF;");
+      try {
+        for (const row of rows) {
+          if (!row || typeof row !== "object") continue;
+          const cols = allowedCols.filter((c) => Object.prototype.hasOwnProperty.call(row, c));
+          if (cols.length === 0) continue;
+          const placeholders = cols.map(() => "?").join(", ");
+          const values = cols.map((c) => {
+            const v = row[c];
+            return v === undefined ? null : v;
+          });
+          this.sql.exec(
+            `INSERT OR REPLACE INTO ${table} (${cols.join(", ")}) VALUES (${placeholders})`,
+            ...values
+          );
+          restored++;
+        }
+        if (params.rebuildFts === true) {
+          this.sql.exec(`DELETE FROM memories_fts;`);
+          this.sql.exec(
+            `INSERT INTO memories_fts(rowid, id, namespace, title, content, summary)
+             SELECT rowid, id, namespace, title, content, COALESCE(summary, '')
+             FROM memories WHERE superseded_by IS NULL;`
+          );
+        }
+      } finally {
+        this.sql.exec("PRAGMA foreign_keys = ON;");
+      }
+    });
+
+    return {
+      ok: true,
+      table,
+      restoredCount: restored,
+      ftsRebuilt: params.rebuildFts === true
+    };
+  }
+
+  /**
    * Nocturnal "Sleep Cycle" Consolidation Alarm (03:00 AM America/La_Paz / 07:00:00 UTC)
    */
   override async alarm(_alarmInfo?: { retryCount: number; isRetry: boolean }): Promise<void> {

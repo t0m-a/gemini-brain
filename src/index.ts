@@ -2022,6 +2022,47 @@ export default {
       }
     }
 
+    // Authenticated Durable Object Disaster Recovery & PITR Routes
+    if (request.method === "GET" && url.pathname === "/audit/pitr-bookmark") {
+      const atParam = url.searchParams.get("at");
+      const atTimestampMs = atParam ? Number(atParam) : undefined;
+      const result = await getBrainStub().getPitrBookmark({
+        atTimestampMs:
+          typeof atTimestampMs === "number" && Number.isFinite(atTimestampMs)
+            ? atTimestampMs
+            : undefined
+      });
+      return Response.json(result, { status: 200, headers: corsHeaders });
+    }
+
+    if (request.method === "POST" && url.pathname === "/audit/pitr-restore") {
+      if (!isPskValid) {
+        return Response.json(
+          { ok: false, error: "Forbidden: Direct MCP_BEARER_TOKEN PSK required for PITR restore." },
+          { status: 403, headers: corsHeaders }
+        );
+      }
+      const body = (await request.json().catch(() => ({}))) as Parameters<
+        BrainMemoryDO["restorePitrBookmark"]
+      >[0];
+      const result = await getBrainStub().restorePitrBookmark(body);
+      return Response.json(result, { status: result.ok ? 200 : 400, headers: corsHeaders });
+    }
+
+    if (request.method === "POST" && url.pathname === "/audit/restore-batch") {
+      if (!isPskValid) {
+        return Response.json(
+          { ok: false, error: "Forbidden: Direct MCP_BEARER_TOKEN PSK required for logical restore." },
+          { status: 403, headers: corsHeaders }
+        );
+      }
+      const body = (await request.json().catch(() => ({}))) as Parameters<
+        BrainMemoryDO["restoreTableBatch"]
+      >[0];
+      const result = await getBrainStub().restoreTableBatch(body);
+      return Response.json(result, { status: result.ok ? 200 : 400, headers: corsHeaders });
+    }
+
     if (request.method === "DELETE" && url.pathname === "/mcp") {
       return new Response(null, { status: 200, headers: corsHeaders });
     }
