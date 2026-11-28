@@ -127,6 +127,15 @@ export class MockVectorizeIndex {
     return { count: ids.length, ids };
   }
 
+  async getByIds(ids: string[]): Promise<VectorizeVector[]> {
+    const out: VectorizeVector[] = [];
+    for (const id of ids) {
+      const rec = this.vectors.get(id);
+      if (rec) out.push(rec);
+    }
+    return out;
+  }
+
   async query(
     vector: number[],
     options?: { topK?: number; namespace?: string; returnMetadata?: string }

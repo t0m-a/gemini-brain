@@ -244,6 +244,7 @@ export interface OvernightDiffParams {
   namespace?: string;
   memoryId?: string;
   operation?: "ALL" | "INSERT" | "UPDATE" | "DELETE" | "CONSOLIDATE" | "ROLLBACK";
+  excludeDaemons?: boolean;
   limit?: number;
 }
 
@@ -288,6 +289,77 @@ export interface TextReplaceSample {
   column: string;
   before: string;
   after: string;
+}
+
+export interface ReclassifyNamespacesParams {
+  sourceNamespace?: string;
+  dryRun?: boolean;
+  reindexVectors?: boolean;
+  updateEdges?: boolean;
+  includePrefixes?: string[];
+  vectorOnlyIds?: string[];
+  maxSamples?: number;
+}
+
+const VALID_BRAIN_NAMESPACES = new Set([
+  "global",
+  "tsimon.me",
+  "minkalab.net",
+  "homelab",
+  "ai-research",
+  "career"
+]);
+
+const PROTECTED_HOMELAB_ROUTE_RE =
+  /(node:rpi5|rpi5-qdrant-knowledge-hub|edge-rag-hub|edge-semantic-search-rag|homelab-backup|homelab-ops|raspberry-pi-backup|backup-pi-restic|cf-state-backup|r2-offsite-sync|pi-apps-backup)/i;
+const MINKALAB_ROUTE_RE =
+  /(minkalab|minka[\s_-]lab|mallasa|escudo[\s_-]digital|gamlp|ciudad[\s_-]inteligente|ciudadan[ií]a[\s_-]digital)/i;
+const TSIMON_ROUTE_RE =
+  /(boliviaremote\.work|bolivia-remote|gemini[\s_-]brain|brain\.tsimon\.me|kb\.tsimon\.me|archive-rag-kb|tsimon\.me|tsimon-me-website)/i;
+const CAREER_ROUTE_RE =
+  /(az-?104|azure[\s_-]az-?104|microsoft and certifications|certification_path|learning_roadmap|career|freelanc|resume|pivot_strategy|short_term_strategy|hiring_non-us_contractor|mssp_consulting|data_engineer|ai_infrastructure_engineer|ai_solutions_engineer|synquery|outlier|innodata|personal profile summary)/i;
+const AI_RESEARCH_ROUTE_RE =
+  /(ai_agents|ai_core_concepts|neural networks|karpathy|behavioral_harness|harness_concepts|context_engineering|context tunning|context tuning|export gemini skills|automated ai research|qdrant_documentation|agentic workflows|01_ai[\s_-]|llm|rag[\s_-]pipeline|latam_solo_founder|south america tech funding)/i;
+
+/**
+ * Deterministic category/path/title -> Brain namespace router mirroring rpi-sync/brain_watcher.py.
+ */
+export function classifyMemoryNamespace(
+  title: string,
+  sourceUri: string | null | undefined,
+  currentNamespace = "homelab"
+): string {
+  const safeDefault = VALID_BRAIN_NAMESPACES.has(currentNamespace) ? currentNamespace : "homelab";
+  const qdrantMatch = title.match(/^\[Qdrant\/([^\]]+)\]\s*(.*)$/i);
+  const category = qdrantMatch ? qdrantMatch[1].trim().toLowerCase() : "";
+  const cleanTitle = qdrantMatch ? qdrantMatch[2].trim() : title;
+  const blob = `${sourceUri || ""} ${cleanTitle}`.trim();
+
+  if (PROTECTED_HOMELAB_ROUTE_RE.test(blob) && !MINKALAB_ROUTE_RE.test(category)) {
+    return "homelab";
+  }
+
+  if (category.includes("minkalab")) return "minkalab.net";
+  if (category === "boliviaremote.work" || category === "tsimon.me") return "tsimon.me";
+  if (category === "career" || category === "microsoft") return "career";
+  if (category === "ai" || category === "ai research" || category === "ai-research") {
+    if (MINKALAB_ROUTE_RE.test(blob)) return "minkalab.net";
+    if (TSIMON_ROUTE_RE.test(blob)) return "tsimon.me";
+    if (CAREER_ROUTE_RE.test(blob)) return "career";
+    return "ai-research";
+  }
+
+  if (MINKALAB_ROUTE_RE.test(blob)) return "minkalab.net";
+  if (TSIMON_ROUTE_RE.test(blob)) return "tsimon.me";
+  if (CAREER_ROUTE_RE.test(blob)) return "career";
+  if (AI_RESEARCH_ROUTE_RE.test(blob)) return "ai-research";
+
+  return safeDefault;
+}
+
+function isDaemonClientId(clientId: string | null | undefined): boolean {
+  const c = (clientId || "").trim();
+  return /^rpi5-debian13-daemon/i.test(c) || /^rpi5-qdrant-federator$/i.test(c);
 }
 
 const FUNCTIONAL_RELATIONS = new Set([
@@ -624,12 +696,13 @@ export class BrainMemoryDO extends DurableObject<Env> {
         const existingRows = this.sql
           .exec<{
             id: string;
+            namespace: string;
             title: string;
             content: string;
             summary: string | null;
             importance: number;
           }>(
-            `SELECT id, title, content, summary, importance
+            `SELECT id, namespace, title, content, summary, importance
              FROM memories
              WHERE id = ?1`,
             p.id
@@ -643,6 +716,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
             token_count, importance, confidence, metadata_json, created_at, updated_at, last_accessed_at
           ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13)
           ON CONFLICT(id) DO UPDATE SET
+            namespace = excluded.namespace,
             title = excluded.title,
             content = excluded.content,
             summary = excluded.summary,
@@ -693,7 +767,11 @@ export class BrainMemoryDO extends DurableObject<Env> {
             )
             .one();
           mutationIds.push(mutRow.mutation_id);
-        } else if (existing.title !== p.title || existing.content !== p.content) {
+        } else if (
+          existing.title !== p.title ||
+          existing.content !== p.content ||
+          existing.namespace !== p.namespace
+        ) {
           const mutRow = this.sql
             .exec<{ mutation_id: number }>(
               `INSERT INTO memory_mutations (
@@ -829,6 +907,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
               edge_id, namespace, source_entity, relation, target_entity, evidence_memory_id, valid_from
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             ON CONFLICT(edge_id) DO UPDATE SET
+              namespace = CASE WHEN ?8 = 1 THEN edges.namespace ELSE excluded.namespace END,
               evidence_memory_id = excluded.evidence_memory_id,
               valid_until = NULL`,
             edgeId,
@@ -837,7 +916,8 @@ export class BrainMemoryDO extends DurableObject<Env> {
             t.relation,
             t.objectId,
             p.id,
-            p.eventTs
+            p.eventTs,
+            isProtectedInfrastructure(edgeId) ? 1 : 0
           );
         }
       }
@@ -2108,34 +2188,95 @@ export class BrainMemoryDO extends DurableObject<Env> {
     const clientFilter = params.clientId?.trim() || "";
     const nsFilter = params.namespace?.trim() || "";
     const memFilter = params.memoryId?.trim() || "";
+    const excludeDaemons = params.excludeDaemons === true;
+    const daemonFilterFlag = excludeDaemons ? 1 : 0;
 
-    // 1. Fetch explicit audit mutations in the window
-    const rawMutations = this.sql
-      .exec<MutationAuditRow>(
-        `SELECT
-           mutation_id, memory_id, namespace, memory_type, operation, client_id,
-           old_title, old_content, old_summary, old_importance,
-           new_title, new_content, new_summary, new_importance,
-           source_uri, rolled_back, created_at
-         FROM memory_mutations
-         WHERE (?1 = '' OR memory_id = ?1)
-           AND (?1 != '' OR created_at >= ?2)
-           AND (?3 = 'ALL' OR operation = ?3)
-           AND (?4 = '' OR client_id = ?4)
-           AND (?5 = '' OR namespace = ?5)
-         ORDER BY created_at DESC, mutation_id DESC
-         LIMIT ?6`,
-        memFilter,
-        sinceUnix,
-        opFilter,
-        clientFilter,
-        nsFilter,
-        limit
-      )
-      .toArray();
+    // 1. Fetch explicit audit mutations in the window.
+    //    When no explicit clientFilter is given and daemons aren't excluded, prioritize non-daemon
+    //    architect/consolidator mutations first so high-volume RPi5 Qdrant/Markdown syncs never
+    //    saturate the 50-row window and hide substantive architect mutations.
+    let rawMutations: MutationAuditRow[];
+    if (!clientFilter && !excludeDaemons && !memFilter) {
+      const nonDaemonMutations = this.sql
+        .exec<MutationAuditRow>(
+          `SELECT
+             mutation_id, memory_id, namespace, memory_type, operation, client_id,
+             old_title, old_content, old_summary, old_importance,
+             new_title, new_content, new_summary, new_importance,
+             source_uri, rolled_back, created_at
+           FROM memory_mutations
+           WHERE created_at >= ?1
+             AND (?2 = 'ALL' OR operation = ?2)
+             AND (?3 = '' OR namespace = ?3)
+             AND client_id NOT LIKE 'rpi5-debian13-daemon%'
+             AND client_id != 'rpi5-qdrant-federator'
+           ORDER BY created_at DESC, mutation_id DESC
+           LIMIT ?4`,
+          sinceUnix,
+          opFilter,
+          nsFilter,
+          limit
+        )
+        .toArray();
 
-    // 2. Include fallback virtual entries for memories updated in the window prior to audit table creation
+      const remainingSlots = Math.max(0, limit - nonDaemonMutations.length);
+      const daemonMutations =
+        remainingSlots > 0
+          ? this.sql
+              .exec<MutationAuditRow>(
+                `SELECT
+                   mutation_id, memory_id, namespace, memory_type, operation, client_id,
+                   old_title, old_content, old_summary, old_importance,
+                   new_title, new_content, new_summary, new_importance,
+                   source_uri, rolled_back, created_at
+                 FROM memory_mutations
+                 WHERE created_at >= ?1
+                   AND (?2 = 'ALL' OR operation = ?2)
+                   AND (?3 = '' OR namespace = ?3)
+                   AND (client_id LIKE 'rpi5-debian13-daemon%' OR client_id = 'rpi5-qdrant-federator')
+                 ORDER BY created_at DESC, mutation_id DESC
+                 LIMIT ?4`,
+                sinceUnix,
+                opFilter,
+                nsFilter,
+                remainingSlots
+              )
+              .toArray()
+          : [];
+
+      rawMutations = [...nonDaemonMutations, ...daemonMutations];
+    } else {
+      rawMutations = this.sql
+        .exec<MutationAuditRow>(
+          `SELECT
+             mutation_id, memory_id, namespace, memory_type, operation, client_id,
+             old_title, old_content, old_summary, old_importance,
+             new_title, new_content, new_summary, new_importance,
+             source_uri, rolled_back, created_at
+           FROM memory_mutations
+           WHERE (?1 = '' OR memory_id = ?1)
+             AND (?1 != '' OR created_at >= ?2)
+             AND (?3 = 'ALL' OR operation = ?3)
+             AND (?4 = '' OR client_id = ?4)
+             AND (?5 = '' OR namespace = ?5)
+             AND (?6 = 0 OR (client_id NOT LIKE 'rpi5-debian13-daemon%' AND client_id != 'rpi5-qdrant-federator'))
+           ORDER BY created_at DESC, mutation_id DESC
+           LIMIT ?7`,
+          memFilter,
+          sinceUnix,
+          opFilter,
+          clientFilter,
+          nsFilter,
+          daemonFilterFlag,
+          limit
+        )
+        .toArray();
+    }
+
+    // 2. Include fallback virtual entries ONLY for memories updated in the window that have NO row
+    //    in memory_mutations (pre-audit legacy records), so filtered-out daemon/client mutations are never resurrected.
     const auditedIds = new Set(rawMutations.map((m) => m.memory_id));
+    let fallbackAddedCount = 0;
     if (rawMutations.length < limit) {
       const fallbackRows = this.sql
         .exec<{
@@ -2151,14 +2292,20 @@ export class BrainMemoryDO extends DurableObject<Env> {
           updated_at: number;
         }>(
           `SELECT
-             id, namespace, memory_type, title, content, summary, source_uri,
-             importance, created_at, updated_at
-           FROM memories
-           WHERE (?1 = '' OR id = ?1)
-             AND (?1 != '' OR updated_at >= ?2)
-             AND (?3 = '' OR namespace = ?3)
-             AND superseded_by IS NULL
-           ORDER BY updated_at DESC
+             m.id, m.namespace, m.memory_type, m.title, m.content, m.summary, m.source_uri,
+             m.importance, m.created_at, m.updated_at
+           FROM memories m
+           WHERE (?1 = '' OR m.id = ?1)
+             AND (?1 != '' OR m.updated_at >= ?2)
+             AND (?3 = '' OR m.namespace = ?3)
+             AND m.superseded_by IS NULL
+             AND NOT EXISTS (
+               SELECT 1
+               FROM memory_mutations mm
+               WHERE mm.memory_id = m.id
+                 AND (?1 != '' OR mm.created_at >= ?2)
+             )
+           ORDER BY m.updated_at DESC
            LIMIT ?4`,
           memFilter,
           sinceUnix,
@@ -2171,6 +2318,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
         if (auditedIds.has(r.id)) continue;
         const inferredClient = inferClientId(undefined, r.source_uri, r.memory_type);
         if (clientFilter && inferredClient !== clientFilter) continue;
+        if (excludeDaemons && isDaemonClientId(inferredClient)) continue;
         const inferredOp: MutationAuditRow["operation"] =
           r.memory_type === "episodic_summary"
             ? "CONSOLIDATE"
@@ -2198,20 +2346,95 @@ export class BrainMemoryDO extends DurableObject<Env> {
           rolled_back: 0,
           created_at: r.updated_at
         });
+        fallbackAddedCount++;
         if (rawMutations.length >= limit) break;
       }
     }
 
     rawMutations.sort((a, b) => b.created_at - a.created_at || b.mutation_id - a.mutation_id);
 
-    // 3. Aggregate summary counts
+    // 3. Aggregate TRUE uncapped window-wide summary counts from memory_mutations (+ any fallback pre-audit rows)
     const byOperation: Record<string, number> = {};
     const byClient: Record<string, number> = {};
     const byNamespace: Record<string, number> = {};
-    for (const m of rawMutations) {
-      byOperation[m.operation] = (byOperation[m.operation] || 0) + 1;
-      byClient[m.client_id] = (byClient[m.client_id] || 0) + 1;
-      byNamespace[m.namespace] = (byNamespace[m.namespace] || 0) + 1;
+
+    const opAgg = this.sql
+      .exec<{ k: string; cnt: number }>(
+        `SELECT operation AS k, COUNT(*) AS cnt
+         FROM memory_mutations
+         WHERE (?1 = '' OR memory_id = ?1)
+           AND (?1 != '' OR created_at >= ?2)
+           AND (?3 = 'ALL' OR operation = ?3)
+           AND (?4 = '' OR client_id = ?4)
+           AND (?5 = '' OR namespace = ?5)
+           AND (?6 = 0 OR (client_id NOT LIKE 'rpi5-debian13-daemon%' AND client_id != 'rpi5-qdrant-federator'))
+         GROUP BY operation`,
+        memFilter,
+        sinceUnix,
+        opFilter,
+        clientFilter,
+        nsFilter,
+        daemonFilterFlag
+      )
+      .toArray();
+    const clientAgg = this.sql
+      .exec<{ k: string; cnt: number }>(
+        `SELECT client_id AS k, COUNT(*) AS cnt
+         FROM memory_mutations
+         WHERE (?1 = '' OR memory_id = ?1)
+           AND (?1 != '' OR created_at >= ?2)
+           AND (?3 = 'ALL' OR operation = ?3)
+           AND (?4 = '' OR client_id = ?4)
+           AND (?5 = '' OR namespace = ?5)
+           AND (?6 = 0 OR (client_id NOT LIKE 'rpi5-debian13-daemon%' AND client_id != 'rpi5-qdrant-federator'))
+         GROUP BY client_id
+         ORDER BY cnt DESC`,
+        memFilter,
+        sinceUnix,
+        opFilter,
+        clientFilter,
+        nsFilter,
+        daemonFilterFlag
+      )
+      .toArray();
+    const nsAgg = this.sql
+      .exec<{ k: string; cnt: number }>(
+        `SELECT namespace AS k, COUNT(*) AS cnt
+         FROM memory_mutations
+         WHERE (?1 = '' OR memory_id = ?1)
+           AND (?1 != '' OR created_at >= ?2)
+           AND (?3 = 'ALL' OR operation = ?3)
+           AND (?4 = '' OR client_id = ?4)
+           AND (?5 = '' OR namespace = ?5)
+           AND (?6 = 0 OR (client_id NOT LIKE 'rpi5-debian13-daemon%' AND client_id != 'rpi5-qdrant-federator'))
+         GROUP BY namespace
+         ORDER BY cnt DESC`,
+        memFilter,
+        sinceUnix,
+        opFilter,
+        clientFilter,
+        nsFilter,
+        daemonFilterFlag
+      )
+      .toArray();
+
+    let totalMutationsCount = 0;
+    for (const row of opAgg) {
+      byOperation[row.k] = row.cnt;
+      totalMutationsCount += row.cnt;
+    }
+    for (const row of clientAgg) byClient[row.k] = row.cnt;
+    for (const row of nsAgg) byNamespace[row.k] = row.cnt;
+
+    if (fallbackAddedCount > 0) {
+      for (const m of rawMutations) {
+        if (m.mutation_id === 0) {
+          byOperation[m.operation] = (byOperation[m.operation] || 0) + 1;
+          byClient[m.client_id] = (byClient[m.client_id] || 0) + 1;
+          byNamespace[m.namespace] = (byNamespace[m.namespace] || 0) + 1;
+          totalMutationsCount++;
+        }
+      }
     }
 
     // 4. Fetch decisions, consolidations & governance conflicts
@@ -2303,12 +2526,12 @@ export class BrainMemoryDO extends DurableObject<Env> {
 
     // 5. Build token-efficient Morning Hydration Markdown Block for Gemini / VS Code / Antigravity
     const mdLines: string[] = [
-      `<overnight_brain_diff window_hours="${windowHours}" since="${sinceIso}" total_mutations="${rawMutations.length}" decisions_added="${decisions.length}" episodic_pending="${episodicPendingCount}" conflicts_pending="${pendingConflicts.length}">`,
+      `<overnight_brain_diff window_hours="${windowHours}" since="${sinceIso}" total_mutations="${totalMutationsCount}" decisions_added="${decisions.length}" episodic_pending="${episodicPendingCount}" conflicts_pending="${pendingConflicts.length}">`,
       `### Overnight Brain State Summary (Last ${windowHours}h)`,
       `- **Window**: \`${sinceIso}\` -> \`${new Date(now * 1000).toISOString()}\``,
-      `- **Mutations**: ${rawMutations.length} (${Object.entries(byOperation)
+      `- **Mutations**: ${totalMutationsCount} (${Object.entries(byOperation)
         .map(([k, v]) => `${v} ${k}`)
-        .join(", ") || "none"})`,
+        .join(", ") || "none"})${totalMutationsCount > rawMutations.length ? ` — returning ${rawMutations.length} prioritized rows` : ""}`,
       `- **By Client**: ${Object.entries(byClient)
         .map(([k, v]) => `\`${k}\` (${v})`)
         .join(", ") || "none"}`,
@@ -2354,8 +2577,22 @@ export class BrainMemoryDO extends DurableObject<Env> {
     }
 
     if (rawMutations.length > 0) {
-      mdLines.push(`\n### Recent Memory Mutations (Top ${Math.min(15, rawMutations.length)})`);
-      for (const m of rawMutations.slice(0, 15)) {
+      // Reserve top display slots for non-daemon architect/consolidator mutations first so daemon bulk syncs never mask them
+      const displayMutations =
+        !clientFilter && !excludeDaemons
+          ? (() => {
+              const nonDaemon = rawMutations.filter((m) => !isDaemonClientId(m.client_id));
+              const daemon = rawMutations.filter((m) => isDaemonClientId(m.client_id));
+              if (nonDaemon.length === 0) return daemon.slice(0, 15);
+              if (daemon.length === 0) return nonDaemon.slice(0, 15);
+              const daemonQuota = Math.min(3, daemon.length, Math.max(0, 15 - Math.min(12, nonDaemon.length)));
+              const nonDaemonQuota = Math.min(nonDaemon.length, 15 - daemonQuota);
+              return [...nonDaemon.slice(0, nonDaemonQuota), ...daemon.slice(0, daemonQuota)];
+            })()
+          : rawMutations.slice(0, 15);
+
+      mdLines.push(`\n### Recent Memory Mutations (Top ${displayMutations.length})`);
+      for (const m of displayMutations) {
         const ts = new Date(m.created_at * 1000).toISOString();
         const title = m.new_title || m.old_title || m.memory_id;
         const rbTag = m.rolled_back ? " [ROLLED BACK]" : "";
@@ -2389,7 +2626,7 @@ export class BrainMemoryDO extends DurableObject<Env> {
       sinceUnix,
       sinceIso,
       summary: {
-        totalMutations: rawMutations.length,
+        totalMutations: totalMutationsCount,
         byOperation,
         byClient,
         byNamespace,
@@ -4495,6 +4732,271 @@ export class BrainMemoryDO extends DurableObject<Env> {
       deletedEpisodicLogs,
       skippedProtectedEntities
     };
+  }
+
+  /**
+   * RPC Method 11D: Silent Deterministic Namespace Backfill & Vectorize Namespace Migration.
+   * Reclassifies misrouted daemon memories (e.g., Qdrant/Markdown chunks stuck in 'homelab')
+   * into their canonical namespaces without flooding memory_mutations, updates non-protected
+   * linked KG edges, rebuilds FTS5, and migrates Vectorize namespace partitions via getByIds
+   * (zero AI Neurons) with embedTexts fallback for any unindexed IDs.
+   */
+  async reclassifyNamespaces(params: ReclassifyNamespacesParams = {}): Promise<{
+    ok: boolean;
+    dryRun: boolean;
+    sourceNamespace: string;
+    scanned: number;
+    matchedCount: number;
+    updatedMemories: number;
+    updatedEdges: number;
+    ftsRebuilt: boolean;
+    vectorsCopiedById: number;
+    vectorsReembedded: number;
+    byTargetNamespace: Record<string, number>;
+    movedMemoryIds: string[];
+    samples: Array<{ id: string; from: string; to: string; title: string; sourceUri: string | null }>;
+  }> {
+    const sourceNamespace = (params.sourceNamespace || "homelab").trim();
+    const dryRun = params.dryRun !== false;
+    const reindexVectors = params.reindexVectors !== false;
+    const updateEdges = params.updateEdges !== false;
+    const includePrefixes =
+      Array.isArray(params.includePrefixes) && params.includePrefixes.length > 0
+        ? params.includePrefixes.map((p) => String(p).trim()).filter(Boolean)
+        : ["qdrant_", "md_", "py_"];
+    const maxSamples = Math.max(5, Math.min(200, params.maxSamples ?? 40));
+
+    // Vector-only batch mode: migrate Vectorize namespace partition for specific already-reclassified IDs
+    if (Array.isArray(params.vectorOnlyIds) && params.vectorOnlyIds.length > 0) {
+      const targetIds = Array.from(
+        new Set(params.vectorOnlyIds.map((id) => String(id).trim()).filter(Boolean))
+      ).slice(0, 250);
+      const rows = this.sql
+        .exec<{ id: string; namespace: string; memory_type: string; title: string; content: string }>(
+          `SELECT id, namespace, memory_type, title, content
+           FROM memories
+           WHERE id IN (SELECT value FROM json_each(?1))
+             AND superseded_by IS NULL`,
+          JSON.stringify(targetIds)
+        )
+        .toArray();
+      const { copiedById, reembedded } = await this.migrateVectorNamespaces(rows);
+      return {
+        ok: true,
+        dryRun: false,
+        sourceNamespace,
+        scanned: rows.length,
+        matchedCount: rows.length,
+        updatedMemories: 0,
+        updatedEdges: 0,
+        ftsRebuilt: false,
+        vectorsCopiedById: copiedById,
+        vectorsReembedded: reembedded,
+        byTargetNamespace: {},
+        movedMemoryIds: rows.map((r) => r.id),
+        samples: []
+      };
+    }
+
+    const candidates = this.sql
+      .exec<{
+        id: string;
+        namespace: string;
+        memory_type: string;
+        title: string;
+        content: string;
+        source_uri: string | null;
+      }>(
+        `SELECT id, namespace, memory_type, title, content, source_uri
+         FROM memories
+         WHERE namespace = ?1
+           AND superseded_by IS NULL`,
+        sourceNamespace
+      )
+      .toArray();
+
+    const byTargetNamespace: Record<string, number> = {};
+    const movedRows: Array<{
+      id: string;
+      from: string;
+      to: string;
+      memory_type: string;
+      title: string;
+      content: string;
+      source_uri: string | null;
+    }> = [];
+    const samples: Array<{ id: string; from: string; to: string; title: string; sourceUri: string | null }> = [];
+
+    for (const row of candidates) {
+      if (!includePrefixes.some((pfx) => row.id.startsWith(pfx))) continue;
+      if (isProtectedInfrastructure(row.id) || isProtectedInfrastructure(row.title)) continue;
+
+      const targetNs = classifyMemoryNamespace(row.title, row.source_uri, row.namespace);
+      if (targetNs !== row.namespace) {
+        byTargetNamespace[targetNs] = (byTargetNamespace[targetNs] || 0) + 1;
+        movedRows.push({
+          id: row.id,
+          from: row.namespace,
+          to: targetNs,
+          memory_type: row.memory_type,
+          title: row.title,
+          content: row.content,
+          source_uri: row.source_uri
+        });
+        if (samples.length < maxSamples) {
+          samples.push({
+            id: row.id,
+            from: row.namespace,
+            to: targetNs,
+            title: row.title.slice(0, 140),
+            sourceUri: row.source_uri
+          });
+        }
+      }
+    }
+
+    let updatedMemories = 0;
+    let updatedEdges = 0;
+    let ftsRebuilt = false;
+
+    if (!dryRun && movedRows.length > 0) {
+      this.ctx.storage.transactionSync(() => {
+        for (const m of movedRows) {
+          this.sql.exec(`UPDATE memories SET namespace = ?1 WHERE id = ?2`, m.to, m.id);
+          updatedMemories++;
+
+          if (updateEdges) {
+            const linked = this.sql
+              .exec<{ edge_id: string }>(
+                `SELECT edge_id FROM edges WHERE evidence_memory_id = ?1 AND valid_until IS NULL`,
+                m.id
+              )
+              .toArray();
+            for (const e of linked) {
+              if (isProtectedInfrastructure(e.edge_id)) continue;
+              this.sql.exec(`UPDATE edges SET namespace = ?1 WHERE edge_id = ?2`, m.to, e.edge_id);
+              updatedEdges++;
+            }
+          }
+        }
+        this.sql.exec(`INSERT INTO memories_fts(memories_fts) VALUES('rebuild')`);
+        ftsRebuilt = true;
+      });
+    }
+
+    let vectorsCopiedById = 0;
+    let vectorsReembedded = 0;
+    if (!dryRun && reindexVectors && movedRows.length > 0) {
+      const migrated = await this.migrateVectorNamespaces(
+        movedRows.map((m) => ({
+          id: m.id,
+          namespace: m.to,
+          memory_type: m.memory_type,
+          title: m.title,
+          content: m.content
+        }))
+      );
+      vectorsCopiedById = migrated.copiedById;
+      vectorsReembedded = migrated.reembedded;
+    }
+
+    return {
+      ok: true,
+      dryRun,
+      sourceNamespace,
+      scanned: candidates.length,
+      matchedCount: movedRows.length,
+      updatedMemories,
+      updatedEdges,
+      ftsRebuilt,
+      vectorsCopiedById,
+      vectorsReembedded,
+      byTargetNamespace,
+      movedMemoryIds: movedRows.map((m) => m.id),
+      samples
+    };
+  }
+
+  private async migrateVectorNamespaces(
+    rows: Array<{ id: string; namespace: string; memory_type: string; title: string; content: string }>
+  ): Promise<{ copiedById: number; reembedded: number }> {
+    if (rows.length === 0 || !this.env.VECTOR_INDEX) {
+      return { copiedById: 0, reembedded: 0 };
+    }
+
+    const existingValuesById = new Map<string, number[]>();
+    const vecIndex = this.env.VECTOR_INDEX as VectorizeIndex & {
+      getByIds?: (ids: string[]) => Promise<Array<{ id: string; values?: number[] | Float32Array }>>;
+    };
+
+    if (typeof vecIndex.getByIds === "function") {
+      // Cloudflare Vectorize v2 getByIds supports up to 20 IDs per request
+      for (let i = 0; i < rows.length; i += 20) {
+        const sliceIds = rows.slice(i, i + 20).map((r) => r.id);
+        try {
+          const found = await vecIndex.getByIds(sliceIds);
+          for (const rec of found || []) {
+            if (rec?.id && rec.values && rec.values.length > 0) {
+              existingValuesById.set(rec.id, Array.from(rec.values));
+            }
+          }
+        } catch {
+          // Fall back to embedTexts for any batch that cannot be read via getByIds
+        }
+      }
+    }
+
+    const vectorsToUpsert: VectorizeVector[] = [];
+    const missingRows: typeof rows = [];
+    let copiedById = 0;
+
+    for (const r of rows) {
+      const vals = existingValuesById.get(r.id);
+      if (vals && vals.length > 0) {
+        vectorsToUpsert.push({
+          id: r.id,
+          values: vals,
+          namespace: r.namespace,
+          metadata: {
+            namespace: r.namespace,
+            title: r.title.slice(0, 500),
+            memory_type: r.memory_type
+          }
+        });
+        copiedById++;
+      } else {
+        missingRows.push(r);
+      }
+    }
+
+    let reembedded = 0;
+    if (missingRows.length > 0) {
+      const embedded = await this.embedTexts(
+        missingRows.map((r) => `${r.title.slice(0, 300)}\n${r.content.slice(0, 3500)}`)
+      );
+      missingRows.forEach((r, idx) => {
+        const vals = embedded[idx];
+        if (vals && vals.length > 0) {
+          vectorsToUpsert.push({
+            id: r.id,
+            values: vals,
+            namespace: r.namespace,
+            metadata: {
+              namespace: r.namespace,
+              title: r.title.slice(0, 500),
+              memory_type: r.memory_type
+            }
+          });
+          reembedded++;
+        }
+      });
+    }
+
+    for (let i = 0; i < vectorsToUpsert.length; i += 100) {
+      await this.env.VECTOR_INDEX.upsert(vectorsToUpsert.slice(i, i + 100));
+    }
+
+    return { copiedById, reembedded };
   }
 
   /**

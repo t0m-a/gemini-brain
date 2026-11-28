@@ -161,33 +161,164 @@ class LocalSyncStateDB:
                 chunk_id TEXT PRIMARY KEY,
                 source_uri TEXT NOT NULL,
                 content_sha256 TEXT NOT NULL,
-                synced_at INTEGER NOT NULL
+                synced_at INTEGER NOT NULL,
+                namespace TEXT NOT NULL DEFAULT 'homelab'
             )
             """
         )
+        # Idempotent migration for existing sync_state.db files without namespace column
+        cols = {
+            row[1]
+            for row in self.conn.execute("PRAGMA table_info(synced_chunks)").fetchall()
+        }
+        if "namespace" not in cols:
+            self.conn.execute(
+                "ALTER TABLE synced_chunks ADD COLUMN namespace TEXT NOT NULL DEFAULT 'homelab'"
+            )
         self.conn.commit()
 
-    def is_unchanged(self, chunk_id: str, content_sha256: str) -> bool:
+    def is_unchanged(
+        self, chunk_id: str, content_sha256: str, namespace: str | None = None
+    ) -> bool:
         cur = self.conn.execute(
-            "SELECT content_sha256 FROM synced_chunks WHERE chunk_id = ?",
+            "SELECT content_sha256, namespace FROM synced_chunks WHERE chunk_id = ?",
             (chunk_id,),
         )
         row = cur.fetchone()
-        return bool(row and row[0] == content_sha256)
+        if not row or row[0] != content_sha256:
+            return False
+        if namespace is not None and (row[1] or DEFAULT_NAMESPACE) != namespace:
+            return False
+        return True
 
-    def mark_synced(self, chunk_id: str, source_uri: str, content_sha256: str) -> None:
+    def mark_synced(
+        self,
+        chunk_id: str,
+        source_uri: str,
+        content_sha256: str,
+        namespace: str = DEFAULT_NAMESPACE,
+    ) -> None:
         self.conn.execute(
             """
-            INSERT INTO synced_chunks (chunk_id, source_uri, content_sha256, synced_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO synced_chunks (chunk_id, source_uri, content_sha256, synced_at, namespace)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(chunk_id) DO UPDATE SET
                 source_uri = excluded.source_uri,
                 content_sha256 = excluded.content_sha256,
-                synced_at = excluded.synced_at
+                synced_at = excluded.synced_at,
+                namespace = excluded.namespace
             """,
-            (chunk_id, source_uri, content_sha256, int(time.time())),
+            (chunk_id, source_uri, content_sha256, int(time.time()), namespace),
         )
         self.conn.commit()
+
+
+# =============================================================================
+# DETERMINISTIC CATEGORY & PATH -> NAMESPACE ROUTER
+# =============================================================================
+VALID_NAMESPACES: set[str] = {
+    "global",
+    "tsimon.me",
+    "minkalab.net",
+    "homelab",
+    "ai-research",
+    "career",
+}
+
+_PROTECTED_HOMELAB_RE = re.compile(
+    r"(node:rpi5|rpi5-qdrant-knowledge-hub|edge-rag-hub|edge-semantic-search-rag|"
+    r"homelab-backup|homelab-ops|raspberry-pi-backup|backup-pi-restic|cf-state-backup|"
+    r"r2-offsite-sync|pi-apps-backup)",
+    re.IGNORECASE,
+)
+_MINKALAB_RE = re.compile(
+    r"(minkalab|minka[\s_-]lab|mallasa|escudo[\s_-]digital|gamlp|"
+    r"ciudad[\s_-]inteligente|ciudadan[ií]a[\s_-]digital)",
+    re.IGNORECASE,
+)
+_TSIMON_RE = re.compile(
+    r"(boliviaremote\.work|bolivia-remote|gemini[\s_-]brain|brain\.tsimon\.me|"
+    r"kb\.tsimon\.me|archive-rag-kb|tsimon\.me|tsimon-me-website)",
+    re.IGNORECASE,
+)
+_CAREER_RE = re.compile(
+    r"(az-?104|azure[\s_-]az-?104|microsoft and certifications|certification_path|"
+    r"learning_roadmap|career|freelanc|resume|pivot_strategy|short_term_strategy|"
+    r"hiring_non-us_contractor|mssp_consulting|data_engineer|ai_infrastructure_engineer|"
+    r"ai_solutions_engineer|synquery|outlier|innodata|personal profile summary)",
+    re.IGNORECASE,
+)
+_AI_RESEARCH_RE = re.compile(
+    r"(ai_agents|ai_core_concepts|neural networks|karpathy|behavioral_harness|"
+    r"harness_concepts|context_engineering|context tunning|context tuning|"
+    r"export gemini skills|automated ai research|qdrant_documentation|"
+    r"agentic workflows|01_ai[\s_-]|llm|rag[\s_-]pipeline|latam_solo_founder|"
+    r"south america tech funding)",
+    re.IGNORECASE,
+)
+
+
+def extract_frontmatter_namespace(text: str) -> str | None:
+    fm_match = re.match(r"^---\r?\n(.*?)\r?\n---\r?\n", text, flags=re.DOTALL)
+    if not fm_match:
+        return None
+    ns_match = re.search(
+        r"^\s*namespace\s*:\s*['\"]?([^'\"\r\n#]+)['\"]?",
+        fm_match.group(1),
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    if ns_match:
+        val = ns_match.group(1).strip().lower()
+        if val in VALID_NAMESPACES:
+            return val
+    return None
+
+
+def resolve_namespace(
+    category: str = "",
+    source: str = "",
+    title: str = "",
+    default_namespace: str = DEFAULT_NAMESPACE,
+    explicit_namespace: str | None = None,
+) -> str:
+    """Routes Qdrant points and watched Markdown/Python files into their canonical Brain namespace."""
+    if explicit_namespace and explicit_namespace.strip().lower() in VALID_NAMESPACES:
+        return explicit_namespace.strip().lower()
+
+    cat = (category or "").strip().lower()
+    blob = f"{source or ''} {title or ''}".strip()
+
+    # Keep protected RPi5 / Edge RAG / Homelab backup infrastructure anchored in homelab
+    if _PROTECTED_HOMELAB_RE.search(blob) and not _MINKALAB_RE.search(cat):
+        return "homelab"
+
+    # 1. Explicit domain categories from Qdrant payloads
+    if "minkalab" in cat:
+        return "minkalab.net"
+    if cat in ("boliviaremote.work", "tsimon.me"):
+        return "tsimon.me"
+    if cat in ("career", "microsoft"):
+        return "career"
+    if cat in ("ai", "ai research", "ai-research"):
+        if _MINKALAB_RE.search(blob):
+            return "minkalab.net"
+        if _TSIMON_RE.search(blob):
+            return "tsimon.me"
+        if _CAREER_RE.search(blob):
+            return "career"
+        return "ai-research"
+
+    # 2. Path/title routing for generic categories (Documentation, General, Programming, etc.) & watched files
+    if _MINKALAB_RE.search(blob):
+        return "minkalab.net"
+    if _TSIMON_RE.search(blob):
+        return "tsimon.me"
+    if _CAREER_RE.search(blob):
+        return "career"
+    if _AI_RESEARCH_RE.search(blob):
+        return "ai-research"
+
+    return default_namespace if default_namespace in VALID_NAMESPACES else "homelab"
 
 
 # =============================================================================
@@ -207,7 +338,9 @@ def make_chunk_id(prefix: str, unique_key: str) -> str:
     return f"{prefix}_{digest}"
 
 
-def chunk_python_file(file_path: Path, rel_path: str, namespace: str) -> list[SemanticChunk]:
+def chunk_python_file(
+    file_path: Path, rel_path: str, namespace: str, id_namespace: str | None = None
+) -> list[SemanticChunk]:
     source = file_path.read_text(encoding="utf-8", errors="replace")
     try:
         tree = ast.parse(source, filename=rel_path)
@@ -217,6 +350,7 @@ def chunk_python_file(file_path: Path, rel_path: str, namespace: str) -> list[Se
 
     chunks: list[SemanticChunk] = []
     file_entity_id = f"file:{slugify(rel_path)}"
+    stable_id_ns = id_namespace or namespace
 
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -227,7 +361,7 @@ def chunk_python_file(file_path: Path, rel_path: str, namespace: str) -> list[Se
 
             docstring = ast.get_docstring(node) or f"Python {node_kind} {node.name} in {rel_path}"
             first_line = docstring.strip().splitlines()[0][:240]
-            chunk_id = make_chunk_id("py", f"{namespace}:{rel_path}:{node.name}")
+            chunk_id = make_chunk_id("py", f"{stable_id_ns}:{rel_path}:{node.name}")
             symbol_entity_id = f"symbol:{slugify(rel_path)}:{slugify(node.name)}"
 
             triples = [
@@ -259,10 +393,13 @@ def chunk_python_file(file_path: Path, rel_path: str, namespace: str) -> list[Se
     return chunks
 
 
-def chunk_markdown_file(file_path: Path, rel_path: str, namespace: str) -> list[SemanticChunk]:
+def chunk_markdown_file(
+    file_path: Path, rel_path: str, namespace: str, id_namespace: str | None = None
+) -> list[SemanticChunk]:
     text = file_path.read_text(encoding="utf-8", errors="replace")
     if not text.strip():
         return []
+    stable_id_ns = id_namespace or namespace
 
     matches = list(MD_HEADER_RE.finditer(text))
     # Each section stores: (full_breadcrumb, display_heading, leaf_heading, anchor_base, section_body)
@@ -303,7 +440,7 @@ def chunk_markdown_file(file_path: Path, rel_path: str, namespace: str) -> list[
         seen_breadcrumbs[breadcrumb] = occurrence
         unique_breadcrumb = breadcrumb if occurrence == 1 else f"{breadcrumb} #{occurrence}"
 
-        chunk_id = make_chunk_id("md", f"{namespace}:{rel_path}:{unique_breadcrumb}")
+        chunk_id = make_chunk_id("md", f"{stable_id_ns}:{rel_path}:{unique_breadcrumb}")
         anchor = anchor_base if occurrence == 1 else f"{anchor_base}-{occurrence}"
         wikilinks = sorted(set(WIKILINK_RE.findall(body)))
         triples = [
@@ -517,9 +654,16 @@ class QdrantBrainFederator:
                         }
                     )
 
+                target_namespace = resolve_namespace(
+                    category=category,
+                    source=source,
+                    title=raw_title,
+                    default_namespace=self.namespace,
+                )
+
                 chunk = SemanticChunk(
                     chunk_id=chunk_id,
-                    namespace=self.namespace,
+                    namespace=target_namespace,
                     memory_type=memory_type,
                     title=title,
                     content=content,
@@ -530,7 +674,7 @@ class QdrantBrainFederator:
                 )
 
                 sha = chunk.content_sha256
-                if self.state_db.is_unchanged(chunk.chunk_id, sha):
+                if self.state_db.is_unchanged(chunk.chunk_id, sha, namespace=chunk.namespace):
                     continue
 
                 self.mcp.call_tool(
@@ -548,11 +692,14 @@ class QdrantBrainFederator:
                         "triples": chunk.triples,
                     },
                 )
-                self.state_db.mark_synced(chunk.chunk_id, chunk.source_uri, sha)
+                self.state_db.mark_synced(
+                    chunk.chunk_id, chunk.source_uri, sha, namespace=chunk.namespace
+                )
                 synced_count += 1
                 logger.info(
-                    "Federated Qdrant point [%s] %s (%d/%d)",
+                    "Federated Qdrant point [%s -> %s] %s (%d/%d)",
                     self.collection,
+                    chunk.namespace,
                     title,
                     synced_count,
                     scanned_count,
@@ -615,15 +762,34 @@ class BrainSyncHandler(FileSystemEventHandler):
         except ValueError:
             rel_path = file_path.name
 
+        explicit_ns: str | None = None
+        if file_path.suffix.lower() == ".md":
+            try:
+                head_text = file_path.read_text(encoding="utf-8", errors="replace")[:2000]
+                explicit_ns = extract_frontmatter_namespace(head_text)
+            except OSError:
+                explicit_ns = None
+
+        target_ns = resolve_namespace(
+            source=rel_path,
+            title=file_path.stem,
+            default_namespace=self.namespace,
+            explicit_namespace=explicit_ns,
+        )
+
         if file_path.suffix.lower() == ".py":
-            chunks = chunk_python_file(file_path, rel_path, self.namespace)
+            chunks = chunk_python_file(
+                file_path, rel_path, target_ns, id_namespace=self.namespace
+            )
         else:
-            chunks = chunk_markdown_file(file_path, rel_path, self.namespace)
+            chunks = chunk_markdown_file(
+                file_path, rel_path, target_ns, id_namespace=self.namespace
+            )
 
         synced_count = 0
         for chunk in chunks:
             sha = chunk.content_sha256
-            if self.state_db.is_unchanged(chunk.chunk_id, sha):
+            if self.state_db.is_unchanged(chunk.chunk_id, sha, namespace=chunk.namespace):
                 continue
 
             self.mcp.call_tool(
@@ -641,7 +807,9 @@ class BrainSyncHandler(FileSystemEventHandler):
                     "triples": chunk.triples,
                 },
             )
-            self.state_db.mark_synced(chunk.chunk_id, chunk.source_uri, sha)
+            self.state_db.mark_synced(
+                chunk.chunk_id, chunk.source_uri, sha, namespace=chunk.namespace
+            )
             synced_count += 1
             logger.info("Synced chunk [%s] %s", chunk.namespace, chunk.title)
 

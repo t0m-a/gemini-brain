@@ -122,6 +122,10 @@ function createBrainMcpServer(env: Env, defaultClientId?: string) {
           .enum(["ALL", "INSERT", "UPDATE", "DELETE", "CONSOLIDATE", "ROLLBACK"])
           .optional()
           .describe("Optional filter by mutation operation type (default: 'ALL')"),
+        excludeDaemons: z
+          .boolean()
+          .optional()
+          .describe("Exclude high-volume RPi5 daemon sync mutations (rpi5-debian13-daemon*) from results"),
         format: z
           .enum(["markdown", "json"])
           .optional()
@@ -134,7 +138,8 @@ function createBrainMcpServer(env: Env, defaultClientId?: string) {
         hours: args.hours ?? 12,
         clientId: args.clientId,
         namespace: args.namespace,
-        operation: args.operation ?? "ALL"
+        operation: args.operation ?? "ALL",
+        excludeDaemons: args.excludeDaemons
       });
       return {
         content: [
@@ -1824,6 +1829,7 @@ export default {
                 | "CONSOLIDATE"
                 | "ROLLBACK"
                 | undefined,
+              excludeDaemons: url.searchParams.get("excludeDaemons") === "true",
               limit: url.searchParams.get("limit")
                 ? Number(url.searchParams.get("limit"))
                 : undefined
@@ -1903,6 +1909,26 @@ export default {
         const status = /requires at least one/i.test(message) ? 400 : 500;
         console.error("[audit/purge-records] failed:", message);
         return Response.json({ ok: false, error: message }, { status, headers: corsHeaders });
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/audit/reclassify-namespaces") {
+      if (!isPskValid) {
+        return Response.json(
+          { ok: false, error: "Forbidden: Direct MCP_BEARER_TOKEN PSK required for namespace reclassification." },
+          { status: 403, headers: corsHeaders }
+        );
+      }
+      try {
+        const body = (await request.json().catch(() => ({}))) as Parameters<
+          BrainMemoryDO["reclassifyNamespaces"]
+        >[0];
+        const result = await getBrainStub().reclassifyNamespaces(body);
+        return Response.json(result, { status: 200, headers: corsHeaders });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[audit/reclassify-namespaces] failed:", message);
+        return Response.json({ ok: false, error: message }, { status: 500, headers: corsHeaders });
       }
     }
 

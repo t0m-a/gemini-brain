@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { BrainMemoryDO } from "../src/memory-do";
+import { BrainMemoryDO, classifyMemoryNamespace } from "../src/memory-do";
 import { createMockDurableObjectState, createMockEnv } from "./mocks/do-sqlite-adapter";
 
 async function createTestBrain() {
@@ -1119,5 +1119,198 @@ describe("BrainMemoryDO SQLite, FTS5, Governance, Guardrails & Rollback invarian
     for (let i = 1; i < timestamps.length; i++) {
       expect(timestamps[i - 1]).toBeGreaterThanOrEqual(timestamps[i]);
     }
+  });
+
+  it("updates namespace on rememberFact conflict, reclassifies misrouted Qdrant/Markdown memories silently, and migrates Vectorize partitions", async () => {
+    const { brain, state, vectorIndex } = await createTestBrain();
+
+    // 1. rememberFact conflict updates namespace in SQLite, FTS5, Vectorize, and non-protected edges
+    await brain.rememberFact({
+      id: "qdrant_ns_upsert_1",
+      namespace: "homelab",
+      title: "[Qdrant/MinkaLab] Mallasa GAMLP Co-Responsibility",
+      content: "Formal audience request submitted to Subalcaldesa Lic. Janeth Flores in Mallasa.",
+      clientId: "rpi5-debian13-daemon-qdrant",
+      triples: [
+        {
+          subjectId: "doc:mallasa",
+          subjectName: "Mallasa Proposal",
+          relation: "CATEGORIZED_AS",
+          objectId: "category:minkalab",
+          objectName: "Category: MinkaLab"
+        }
+      ]
+    });
+    expect(vectorIndex.vectors.get("qdrant_ns_upsert_1")?.namespace).toBe("homelab");
+
+    const updated = await brain.rememberFact({
+      id: "qdrant_ns_upsert_1",
+      namespace: "minkalab.net",
+      title: "[Qdrant/MinkaLab] Mallasa GAMLP Co-Responsibility",
+      content: "Formal audience request submitted to Subalcaldesa Lic. Janeth Flores in Mallasa.",
+      clientId: "rpi5-debian13-daemon-qdrant",
+      triples: [
+        {
+          subjectId: "doc:mallasa",
+          subjectName: "Mallasa Proposal",
+          relation: "CATEGORIZED_AS",
+          objectId: "category:minkalab",
+          objectName: "Category: MinkaLab"
+        }
+      ]
+    });
+    expect(updated.mutationId).toBeGreaterThan(0);
+    expect(
+      state.sql.exec<{ namespace: string }>(`SELECT namespace FROM memories WHERE id = 'qdrant_ns_upsert_1'`).one()
+        .namespace
+    ).toBe("minkalab.net");
+    expect(vectorIndex.vectors.get("qdrant_ns_upsert_1")?.namespace).toBe("minkalab.net");
+    expect(
+      state.sql
+        .exec<{ namespace: string }>(`SELECT namespace FROM edges WHERE edge_id = 'doc:mallasa|CATEGORIZED_AS|category:minkalab'`)
+        .one().namespace
+    ).toBe("minkalab.net");
+
+    // 2. Seed historical misrouted Qdrant/Markdown memories in homelab + protected RPi5 memory
+    await brain.rememberFactsBatch([
+      {
+        id: "qdrant_minka_old",
+        namespace: "homelab",
+        title: "[Qdrant/MinkaLab Project] Escudo Digital Cotidiano",
+        content: "Spanish facilitator guide for neighborhood community workshops.",
+        sourceUri: "qdrant://knowledge_hub/notes/MinkaLab/escudo.md#1111",
+        clientId: "rpi5-debian13-daemon-qdrant"
+      },
+      {
+        id: "qdrant_ai_old",
+        namespace: "homelab",
+        title: "[Qdrant/AI] LatAm Solo Founder Accelerators",
+        content: "Cloudflare, Microsoft, and NVIDIA Inception solo founder credit programs.",
+        sourceUri: "qdrant://knowledge_hub/notes/AI/latam_solo_founder.md#2222",
+        clientId: "rpi5-debian13-daemon-qdrant"
+      },
+      {
+        id: "qdrant_az104_old",
+        namespace: "homelab",
+        title: "[Qdrant/Microsoft] Azure AZ-104 Study Guide",
+        content: "Entra ID, RBAC, and virtual networking exam labs.",
+        sourceUri: "qdrant://knowledge_hub/notes/Microsoft and Certifications/Azure AZ-104/guide.md#3333",
+        clientId: "rpi5-debian13-daemon-qdrant"
+      },
+      {
+        id: "qdrant_tsimon_old",
+        namespace: "homelab",
+        title: "[Qdrant/boliviaremote.work] Job Scout Pipeline",
+        content: "Public bilingual remote job board architecture on Cloudflare Workers.",
+        sourceUri: "qdrant://knowledge_hub/notes/boliviaremote.work/spec.md#4444",
+        clientId: "rpi5-debian13-daemon-qdrant"
+      },
+      {
+        id: "qdrant_rpi5_protected",
+        namespace: "homelab",
+        title: "[Qdrant/AI] Raspberry Pi 5 Qdrant Edge Hub (node:rpi5)",
+        content: "Protected infrastructure record must stay in homelab.",
+        sourceUri: "qdrant://knowledge_hub/repos/Edge-Semantic-Search-RAG-Knowledge-Hub-main/README.md#5555",
+        clientId: "rpi5-debian13-daemon-qdrant"
+      }
+    ]);
+
+    expect(classifyMemoryNamespace("[Qdrant/MinkaLab Project] X", "qdrant://knowledge_hub/a.md")).toBe("minkalab.net");
+    expect(classifyMemoryNamespace("[Qdrant/AI] Karpathy LLM Notes", "qdrant://knowledge_hub/notes/AI/k.md")).toBe("ai-research");
+    expect(classifyMemoryNamespace("[Qdrant/Microsoft] AZ-104", "qdrant://knowledge_hub/notes/Microsoft/az.md")).toBe("career");
+    expect(classifyMemoryNamespace("[Qdrant/boliviaremote.work] Spec", "qdrant://knowledge_hub/notes/b.md")).toBe("tsimon.me");
+
+    const mutCountBefore = state.sql
+      .exec<{ c: number }>(`SELECT COUNT(*) AS c FROM memory_mutations`)
+      .one().c;
+
+    // 3. Dry run reports exact targets without mutating SQLite or Vectorize
+    const dry = await brain.reclassifyNamespaces({ sourceNamespace: "homelab", dryRun: true });
+    expect(dry.ok).toBe(true);
+    expect(dry.dryRun).toBe(true);
+    expect(dry.matchedCount).toBe(4);
+    expect(dry.updatedMemories).toBe(0);
+    expect(dry.byTargetNamespace).toEqual({
+      "minkalab.net": 1,
+      "ai-research": 1,
+      career: 1,
+      "tsimon.me": 1
+    });
+
+    // 4. Live execution moves all 4 cleanly, preserves protected RPi5 in homelab, migrates vectors via getByIds, and adds 0 noisy mutations
+    const applied = await brain.reclassifyNamespaces({
+      sourceNamespace: "homelab",
+      dryRun: false,
+      reindexVectors: true
+    });
+    expect(applied.ok).toBe(true);
+    expect(applied.updatedMemories).toBe(4);
+    expect(applied.ftsRebuilt).toBe(true);
+    expect(applied.vectorsCopiedById).toBe(4);
+    expect(applied.vectorsReembedded).toBe(0);
+
+    const mutCountAfter = state.sql
+      .exec<{ c: number }>(`SELECT COUNT(*) AS c FROM memory_mutations`)
+      .one().c;
+    expect(mutCountAfter).toBe(mutCountBefore);
+
+    expect(vectorIndex.vectors.get("qdrant_minka_old")?.namespace).toBe("minkalab.net");
+    expect(vectorIndex.vectors.get("qdrant_ai_old")?.namespace).toBe("ai-research");
+    expect(vectorIndex.vectors.get("qdrant_az104_old")?.namespace).toBe("career");
+    expect(vectorIndex.vectors.get("qdrant_tsimon_old")?.namespace).toBe("tsimon.me");
+    expect(vectorIndex.vectors.get("qdrant_rpi5_protected")?.namespace).toBe("homelab");
+
+    // 5. Verify hybridRecall in minkalab.net now finds the reclassified memory!
+    const minkaRecall = await brain.hybridRecall({
+      query: "Escudo Digital Cotidiano community workshops",
+      namespace: "minkalab.net",
+      tokenBudget: 1500
+    });
+    expect(minkaRecall.compiledMarkdown).toContain("Escudo Digital Cotidiano");
+  });
+
+  it("reports uncapped window-wide stats and prioritizes non-daemon architect mutations in getOvernightDiff", async () => {
+    const { brain } = await createTestBrain();
+
+    // Seed 2 older architect mutations first, then flood 60 newer daemon sync inserts
+    await brain.rememberFact({
+      id: "arch-fact-1",
+      namespace: "global",
+      title: "Architect Firewall Policy",
+      content: "Strict Zero Trust rules verified.",
+      clientId: "antigravity-win11"
+    });
+    await brain.rememberFact({
+      id: "arch-fact-2",
+      namespace: "tsimon.me",
+      title: "Architect Worker Deployment",
+      content: "Deployed v1.7.4 edge router.",
+      clientId: "gemini-cli-win11"
+    });
+
+    const daemonBatch = Array.from({ length: 60 }, (_, idx) => ({
+      id: `qdrant_flood_${idx}`,
+      namespace: "homelab",
+      title: `[Qdrant/Documentation] Bulk Chunk #${idx}`,
+      content: `Automated daemon chunk content number ${idx}.`,
+      clientId: "rpi5-debian13-daemon-qdrant"
+    }));
+    await brain.rememberFactsBatch(daemonBatch);
+
+    // Default call (limit=50) MUST still report true total=62 and surface both architect mutations in Top 15
+    const diff = await brain.getOvernightDiff({ hours: 24 });
+    expect(diff.summary.totalMutations).toBe(62);
+    expect(diff.summary.byClient["rpi5-debian13-daemon-qdrant"]).toBe(60);
+    expect(diff.summary.byClient["antigravity-win11"]).toBe(1);
+    expect(diff.summary.byClient["gemini-cli-win11"]).toBe(1);
+    expect(diff.mutations.length).toBe(50);
+    expect(diff.hydrationMarkdown).toContain("Architect Firewall Policy");
+    expect(diff.hydrationMarkdown).toContain("Architect Worker Deployment");
+
+    // excludeDaemons=true cleanly filters out all 60 daemon rows
+    const cleanOnly = await brain.getOvernightDiff({ hours: 24, excludeDaemons: true });
+    expect(cleanOnly.summary.totalMutations).toBe(2);
+    expect(cleanOnly.mutations.length).toBe(2);
+    expect(cleanOnly.summary.byClient["rpi5-debian13-daemon-qdrant"]).toBeUndefined();
   });
 });
